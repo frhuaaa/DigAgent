@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import torch
 
 from core.agent_runtime import AgentRuntime
 from core.errors import ContractError
-from training.model_trainer import select_checkpoint_epoch
+from training.model_trainer import (
+    _atomic_torch_save,
+    checkpoint_score,
+    is_checkpoint_improvement,
+    persisted_epoch_record,
+    persisted_metric,
+    select_checkpoint_epoch,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +35,37 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(select_checkpoint_epoch(history, "rank_icir")[0], 2)
         with self.assertRaises(ContractError):
             select_checkpoint_epoch(history, "sharpe")
+
+    def test_best_checkpoint_requires_strict_finite_improvement(self):
+        self.assertTrue(is_checkpoint_improvement(0.10, float("-inf")))
+        self.assertTrue(is_checkpoint_improvement(0.11, 0.10))
+        self.assertFalse(is_checkpoint_improvement(0.10, 0.10))
+        self.assertFalse(is_checkpoint_improvement(0.09, 0.10))
+        self.assertFalse(is_checkpoint_improvement(None, 0.10))
+        self.assertFalse(is_checkpoint_improvement(float("nan"), 0.10))
+        self.assertEqual(checkpoint_score(None), float("-inf"))
+
+    def test_best_checkpoint_atomically_replaces_one_file(self):
+        with TemporaryDirectory() as temporary_dir:
+            checkpoint = Path(temporary_dir) / "checkpoints" / "best.pt"
+            _atomic_torch_save({"epoch": 0}, checkpoint)
+            _atomic_torch_save({"epoch": 3}, checkpoint)
+            self.assertEqual([path.name for path in checkpoint.parent.iterdir()], ["best.pt"])
+            self.assertEqual(torch.load(checkpoint, weights_only=False)["epoch"], 3)
+
+    def test_training_artifact_metrics_are_rounded_to_four_decimals(self):
+        self.assertEqual(persisted_metric(0.123456), 0.1235)
+        self.assertIsNone(persisted_metric(float("nan")))
+        record = persisted_epoch_record({
+            "epoch": 0,
+            "training_loss": 0.987654,
+            "train": {"ic": 0.111149},
+            "valid": {"ic": 0.222251},
+            "excluded_dates": {},
+        })
+        self.assertEqual(record["training_loss"], 0.9877)
+        self.assertEqual(record["train"]["ic"], 0.1111)
+        self.assertEqual(record["valid"]["ic"], 0.2223)
 
 
 class RoutingTests(unittest.TestCase):
@@ -57,4 +98,3 @@ class RoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

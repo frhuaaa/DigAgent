@@ -12,8 +12,14 @@ features, portfolio, or any undeclared path. This is diagnosis-driven
 intervention, not a parameter search or an instruction to retain the best
 validation Sharpe.
 
+You receive the current model source experiment's complete structured
+`model_training_history`, ordered from epoch 0 through the final completed
+epoch. Diagnose training dynamics from sustained train/validation trends and
+the deterministic summary; do not infer overfitting or instability from a
+single noisy epoch. The history contains no test metrics and must never be
+supplemented with researcher-only outputs.
+
 Return only JSON conforming to the supplied schema. State expected metrics and
 directions precisely enough for the deterministic Validation Gate to evaluate.
 If no defensible legal change serves CLEM's goal, return an empty diff and
 explain why; never invent an out-of-space value.
-

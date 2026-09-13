@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import jsonschema
@@ -9,9 +10,160 @@ import yaml
 
 from adapters.llm_client import AgentClient
 from core.errors import ContractError
-from core.io_utils import load_json
+from core.io_utils import load_json, sha256_file
 from core.isolation import assert_validation_safe_value
 from memory.memory_store import MemoryStore
+
+
+MODEL_METRICS = ("ic", "icir", "rank_ic", "rank_icir")
+MODEL_METRIC_DECIMALS = 4
+
+
+def _finite_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _metric_output(value: object) -> float | None:
+    number = _finite_float(value)
+    return None if number is None else round(number, MODEL_METRIC_DECIMALS)
+
+
+def _model_training_records(experiment_dir: Path) -> tuple[list[dict], dict, Path]:
+    training_log = experiment_dir / "logs" / "training_metrics.jsonl"
+    if not training_log.is_file():
+        raise ContractError(f"MODEL_TRAINING_LOG_MISSING: {experiment_dir.name}")
+    try:
+        records = [
+            json.loads(line)
+            for line in training_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ContractError(f"MODEL_TRAINING_LOG_INVALID: {experiment_dir.name}") from exc
+    epochs = [record for record in records if "epoch" in record and record.get("event") is None]
+    selections = [record for record in records if record.get("event") == "checkpoint_selected"]
+    if not epochs:
+        raise ContractError(f"MODEL_TRAINING_EPOCHS_MISSING: {experiment_dir.name}")
+    epoch_numbers = [int(record["epoch"]) for record in epochs]
+    if epoch_numbers != sorted(epoch_numbers) or len(epoch_numbers) != len(set(epoch_numbers)):
+        raise ContractError(f"MODEL_TRAINING_EPOCH_ORDER_INVALID: {experiment_dir.name}")
+    if len(selections) != 1:
+        raise ContractError(f"MODEL_CHECKPOINT_SELECTION_COUNT_INVALID: {experiment_dir.name}")
+    return epochs, selections[0], training_log
+
+
+def _split_metric(record: dict, split: str, metric: str) -> float | None:
+    values = record.get(split)
+    return _finite_float(values.get(metric)) if isinstance(values, dict) else None
+
+
+def build_model_training_summary(experiment_dir: Path) -> dict:
+    """Build the compact validation-only model evidence supplied to CLEM."""
+    epochs, selected, _ = _model_training_records(experiment_dir)
+    metric_label = str(selected.get("metric", ""))
+    metric = metric_label.removeprefix("valid.")
+    if metric not in MODEL_METRICS:
+        raise ContractError(f"MODEL_CHECKPOINT_METRIC_INVALID: {metric_label}")
+    selected_epoch = int(selected["epoch"])
+    selected_records = [record for record in epochs if int(record["epoch"]) == selected_epoch]
+    if len(selected_records) != 1:
+        raise ContractError(f"MODEL_SELECTED_EPOCH_MISSING: {experiment_dir.name}")
+    best_record = selected_records[0]
+    valid_scores = [
+        score
+        for record in epochs
+        if (score := _split_metric(record, "valid", metric)) is not None
+    ]
+    if not valid_scores:
+        raise ContractError(f"MODEL_VALIDATION_METRIC_EMPTY: {experiment_dir.name}")
+    selected_score = _finite_float(selected.get("score"))
+    selected_record_score = _split_metric(best_record, "valid", metric)
+    rounding_tolerance = 10 ** (-MODEL_METRIC_DECIMALS)
+    if (
+        selected_score is None
+        or selected_record_score is None
+        or not math.isclose(selected_score, selected_record_score, rel_tol=0.0, abs_tol=rounding_tolerance)
+        or selected_score < max(valid_scores) - rounding_tolerance
+    ):
+        raise ContractError(f"MODEL_CHECKPOINT_SELECTION_MISMATCH: {experiment_dir.name}")
+
+    first_record = epochs[0]
+    last_record = epochs[-1]
+    first_train = _split_metric(first_record, "train", metric)
+    first_valid = _split_metric(first_record, "valid", metric)
+    train_at_best = _split_metric(best_record, "train", metric)
+    last_train = _split_metric(last_record, "train", metric)
+    last_valid = _split_metric(last_record, "valid", metric)
+
+    def difference(left: float | None, right: float | None) -> float | None:
+        return None if left is None or right is None else _metric_output(left - right)
+
+    config = load_json(experiment_dir / "config.json")
+    configured_epochs = int(config["z_model"]["base_params"]["n_epochs"])
+    summary = {
+        "model_source_experiment_id": experiment_dir.name,
+        "model_reused": False,
+        "epochs_completed": len(epochs),
+        "configured_epochs": configured_epochs,
+        "first_epoch": int(first_record["epoch"]),
+        "last_epoch": int(last_record["epoch"]),
+        "selected_metric": metric,
+        "selected_epoch": selected_epoch,
+        "best_valid_score": _metric_output(selected_score),
+        "first_train_score": _metric_output(first_train),
+        "first_valid_score": _metric_output(first_valid),
+        "train_score_at_best": _metric_output(train_at_best),
+        "last_train_score": _metric_output(last_train),
+        "last_valid_score": _metric_output(last_valid),
+        "generalization_gap_at_best": difference(train_at_best, selected_score),
+        "generalization_gap_last": difference(last_train, last_valid),
+        "post_best_valid_drop": difference(selected_score, last_valid),
+        "post_best_train_change": difference(last_train, train_at_best),
+        "epochs_after_best": int(last_record["epoch"]) - selected_epoch,
+        "early_stopped": len(epochs) < configured_epochs,
+        "checkpoint_selection": {**selected, "score": _metric_output(selected_score)},
+        "contains_test_derived_data": False,
+    }
+    assert_validation_safe_value(summary)
+    return summary
+
+
+def build_fama_training_history(experiment_dir: Path) -> dict:
+    """Build the complete compact train/valid epoch curve supplied only to FAMA."""
+    epochs, selected, training_log = _model_training_records(experiment_dir)
+    columns = ["epoch", "training_loss"]
+    for metric in MODEL_METRICS:
+        columns.extend((f"train_{metric}", f"valid_{metric}"))
+    rows = []
+    for record in epochs:
+        row: list[int | float | None] = [
+            int(record["epoch"]),
+            _metric_output(record.get("training_loss")),
+        ]
+        for metric in MODEL_METRICS:
+            row.extend((
+                _metric_output(_split_metric(record, "train", metric)),
+                _metric_output(_split_metric(record, "valid", metric)),
+            ))
+        rows.append(row)
+    history = {
+        "model_source_experiment_id": experiment_dir.name,
+        "model_reused": False,
+        "columns": columns,
+        "rows": rows,
+        "checkpoint_selection": {**selected, "score": _metric_output(selected.get("score"))},
+        "derived_summary": build_model_training_summary(experiment_dir),
+        "training_log_sha256": sha256_file(training_log),
+        "contains_test_derived_data": False,
+    }
+    assert_validation_safe_value(history)
+    return history
 
 
 def build_validation_evidence(experiment_dir: Path) -> dict:
@@ -51,15 +203,7 @@ def build_validation_evidence(experiment_dir: Path) -> dict:
         evidence["topk_comparison"] = load_json(topk_path)
     training_log = experiment_dir / "logs" / "training_metrics.jsonl"
     if training_log.is_file():
-        records = [json.loads(line) for line in training_log.read_text(encoding="utf-8").splitlines() if line.strip()]
-        epochs = [record for record in records if "epoch" in record and record.get("event") is None]
-        selected = next((record for record in records if record.get("event") == "checkpoint_selected"), None)
-        evidence["model"] = {
-            "epochs_completed": len(epochs),
-            "first_epoch": epochs[0] if epochs else None,
-            "last_epoch": epochs[-1] if epochs else None,
-            "checkpoint_selection": selected,
-        }
+        evidence["model"] = build_model_training_summary(experiment_dir)
     else:
         evidence["model"] = {"reused": True}
     assert_validation_safe_value(evidence)
@@ -216,7 +360,14 @@ class AgentRuntime:
         assert_validation_safe_value(context)
         return self.client.complete_json(self._prompt("RASS"), context, self._schema("RASS"), "rass_proposal")
 
-    def specialist(self, agent: str, clem: dict, evidence: dict, contract_feedback: dict | None = None) -> dict:
+    def specialist(
+        self,
+        agent: str,
+        clem: dict,
+        evidence: dict,
+        contract_feedback: dict | None = None,
+        model_training_history: dict | None = None,
+    ) -> dict:
         context = {
             "clem_diagnosis": clem,
             "accepted_adaptive_config": self._adaptive_config(self.config),
@@ -233,6 +384,9 @@ class AgentRuntime:
                 "required_evidence_ref": "configs/rass_train_evidence.json",
             }
         elif agent == "FAMA":
+            if model_training_history is None:
+                raise ContractError("FAMA_MODEL_TRAINING_HISTORY_REQUIRED")
+            assert_validation_safe_value(model_training_history)
             router = yaml.safe_load((self.repo_root / "agents" / "FAMA" / "intervention_space.yaml").read_text(encoding="utf-8"))
             model_name = self.config["z_model"]["model_name"]
             relative = router["model_spaces"].get(model_name)
@@ -240,6 +394,7 @@ class AgentRuntime:
                 raise ContractError("FAMA_MODEL_UNSUPPORTED")
             context.update({
                 "current_validation_evidence": evidence,
+                "model_training_history": model_training_history,
                 "complete_model_memory": self.memory.projection("model"),
                 "intervention_router": router,
                 "resolved_model_space": yaml.safe_load((self.repo_root / "agents" / "FAMA" / relative).read_text(encoding="utf-8")),

@@ -21,7 +21,7 @@ from core.io_utils import atomic_write_json, load_json
 from core.isolation import install_researcher_write_guard
 from core.split_guard import aligned_trade_return_dates, purged_signal_dates, split_window, validate_panel_coverage
 from evaluation.result_writer import build_result, write_result
-from training.model_trainer import evaluate_model, load_model_from_checkpoint
+from training.model_trainer import evaluate_model, load_model_from_checkpoint, persisted_metric
 
 
 def run_epoch(config: dict, experiment_dir: Path, checkpoint: Path, epoch: int, train_metrics: dict, valid_metrics: dict) -> None:
@@ -38,16 +38,16 @@ def run_epoch(config: dict, experiment_dir: Path, checkpoint: Path, epoch: int, 
     record = {
         "epoch": epoch,
         "checkpoint_id": checkpoint.name,
-        **{f"train_{key}": train_metrics.get(key) for key in ("ic", "icir", "rank_ic", "rank_icir")},
-        **{f"valid_{key}": valid_metrics.get(key) for key in ("ic", "icir", "rank_ic", "rank_icir")},
-        **{f"test_{key}": metrics.summary.get(key) for key in ("ic", "icir", "rank_ic", "rank_icir")},
+        **{f"train_{key}": persisted_metric(train_metrics.get(key)) for key in ("ic", "icir", "rank_ic", "rank_icir")},
+        **{f"valid_{key}": persisted_metric(valid_metrics.get(key)) for key in ("ic", "icir", "rank_ic", "rank_icir")},
+        **{f"test_{key}": persisted_metric(metrics.summary.get(key)) for key in ("ic", "icir", "rank_ic", "rank_icir")},
     }
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 def repair_epoch_log(config: dict, experiment_dir: Path) -> None:
-    """Researcher-only recovery for epoch jobs that failed before producing output."""
+    """Researcher-only recovery for legacy runs that retained every epoch checkpoint."""
     adaptive_log = experiment_dir / "logs" / "training_metrics.jsonl"
     records = [
         json.loads(line)
@@ -66,6 +66,11 @@ def repair_epoch_log(config: dict, experiment_dir: Path) -> None:
         for record in epochs:
             epoch = int(record["epoch"])
             checkpoint = experiment_dir / "artifacts" / "checkpoints" / f"epoch_{epoch:03d}.pt"
+            if not checkpoint.is_file():
+                raise RuntimeError(
+                    "EPOCH_METRIC_REPAIR_UNAVAILABLE: non-selected epoch checkpoints "
+                    "are intentionally not retained"
+                )
             model = load_model_from_checkpoint(config, checkpoint)
             _, metrics = evaluate_model(
                 model, sampler, raw_label, len(config["z_alpha"]["selected_features"]),
@@ -74,9 +79,9 @@ def repair_epoch_log(config: dict, experiment_dir: Path) -> None:
             output = {
                 "epoch": epoch,
                 "checkpoint_id": checkpoint.name,
-                **{f"train_{key}": record["train"].get(key) for key in ("ic", "icir", "rank_ic", "rank_icir")},
-                **{f"valid_{key}": record["valid"].get(key) for key in ("ic", "icir", "rank_ic", "rank_icir")},
-                **{f"test_{key}": metrics.summary.get(key) for key in ("ic", "icir", "rank_ic", "rank_icir")},
+                **{f"train_{key}": persisted_metric(record["train"].get(key)) for key in ("ic", "icir", "rank_ic", "rank_icir")},
+                **{f"valid_{key}": persisted_metric(record["valid"].get(key)) for key in ("ic", "icir", "rank_ic", "rank_icir")},
+                **{f"test_{key}": persisted_metric(metrics.summary.get(key)) for key in ("ic", "icir", "rank_ic", "rank_icir")},
             }
             handle.write(json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
     temporary_path.replace(output_dir / "epoch_metrics.jsonl")

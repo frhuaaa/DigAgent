@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -20,6 +22,31 @@ from evaluation.prediction_metrics import SignalMetricResult, compute_signal_met
 
 
 ResearcherDispatch = Callable[[int, Path, dict, dict], None]
+TRAINING_METRIC_DECIMALS = 4
+
+
+def persisted_metric(value: object) -> float | None:
+    """Round a finite training metric for artifacts without changing internal math."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, TRAINING_METRIC_DECIMALS) if np.isfinite(number) else None
+
+
+def persisted_metric_summary(values: dict) -> dict:
+    return {key: persisted_metric(value) for key, value in values.items()}
+
+
+def persisted_epoch_record(record: dict) -> dict:
+    return {
+        **record,
+        "training_loss": persisted_metric(record.get("training_loss")),
+        "train": persisted_metric_summary(record.get("train", {})),
+        "valid": persisted_metric_summary(record.get("valid", {})),
+    }
 
 
 class SamplerDataset(Dataset):
@@ -71,6 +98,65 @@ def select_checkpoint_epoch(history: list[dict], metric: str | None = None) -> t
             best_epoch = int(record["epoch"])
             best_score = score
     return best_epoch, None if best_score == -math.inf else best_score
+
+
+def checkpoint_score(value: object) -> float:
+    """Normalize a configured validation metric for strict best-checkpoint selection."""
+    if value is None:
+        return -math.inf
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return -math.inf
+    return score if np.isfinite(score) else -math.inf
+
+
+def is_checkpoint_improvement(value: object, best_score: float) -> bool:
+    """Return True only for a finite validation score strictly above the incumbent."""
+    return checkpoint_score(value) > best_score
+
+
+def _checkpoint_payload(model: nn.Module, config: dict, epoch: int, feature_count: int) -> dict:
+    return {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "model_name": config["z_model"]["model_name"],
+        "d_feat": feature_count,
+        "config_hash": config["provenance"]["effective_config_hash"],
+    }
+
+
+def _atomic_torch_save(payload: dict, destination: Path) -> None:
+    """Replace the one persistent best checkpoint without exposing a partial file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _transient_checkpoint(payload: dict, epoch: int) -> Path:
+    """Create an ephemeral hand-off for the synchronous isolated epoch evaluator."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f"diagagent_epoch_{epoch:03d}_",
+        suffix=".pt",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        torch.save(payload, temporary)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return temporary
 
 
 def seed_everything(seed: int) -> None:
@@ -188,6 +274,8 @@ def train_model(
     log_dir = experiment_dir / "logs"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+    for stale_checkpoint in checkpoint_dir.glob("*.pt"):
+        stale_checkpoint.unlink()
     index_payload = {
         "train": [[pd.Timestamp(date).strftime("%Y-%m-%d"), str(instrument)] for date, instrument in train_sampler.get_index()],
         "valid": [[pd.Timestamp(date).strftime("%Y-%m-%d"), str(instrument)] for date, instrument in valid_sampler.get_index()],
@@ -201,7 +289,8 @@ def train_model(
     history: list[dict] = []
     best_score = -math.inf
     best_epoch = -1
-    best_checkpoint: Path | None = None
+    best_checkpoint = checkpoint_dir / "best.pt"
+    has_best_checkpoint = False
     no_improvement = 0
     metrics_log = log_dir / "training_metrics.jsonl"
     with metrics_log.open("w", encoding="utf-8", newline="\n") as log_handle:
@@ -233,17 +322,6 @@ def train_model(
                 raise ContractError("TRAINING_DROP_LAST_REMOVED_ALL_BATCHES")
             _, train_metrics = evaluate_model(model, train_sampler, train_raw_label, feature_count, config, device)
             _, valid_metrics = evaluate_model(model, valid_sampler, valid_raw_label, feature_count, config, device)
-            checkpoint = checkpoint_dir / f"epoch_{epoch:03d}.pt"
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "model_name": config["z_model"]["model_name"],
-                    "d_feat": feature_count,
-                    "config_hash": config["provenance"]["effective_config_hash"],
-                },
-                checkpoint,
-            )
             record = {
                 "epoch": epoch,
                 "training_loss": float(np.mean(losses)),
@@ -252,25 +330,33 @@ def train_model(
                 "excluded_dates": {"train": train_metrics.excluded, "valid": valid_metrics.excluded},
             }
             history.append(record)
-            log_handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            log_handle.write(json.dumps(persisted_epoch_record(record), ensure_ascii=False, separators=(",", ":")) + "\n")
             log_handle.flush()
-            researcher_dispatch(epoch, checkpoint, train_metrics.summary, valid_metrics.summary)
-
             score_value = valid_metrics.summary.get(metric_name)
-            score = float(score_value) if score_value is not None and np.isfinite(score_value) else -math.inf
-            if best_checkpoint is None or score > best_score:
+            score = checkpoint_score(score_value)
+            improved = is_checkpoint_improvement(score_value, best_score)
+            payload = _checkpoint_payload(model, config, epoch, feature_count)
+            if improved:
+                _atomic_torch_save(payload, best_checkpoint)
                 best_score = score
                 best_epoch = epoch
-                best_checkpoint = checkpoint
+                has_best_checkpoint = True
                 no_improvement = 0
             else:
                 no_improvement += 1
+            dispatch_checkpoint = best_checkpoint if improved else _transient_checkpoint(payload, epoch)
+            try:
+                researcher_dispatch(epoch, dispatch_checkpoint, train_metrics.summary, valid_metrics.summary)
+            finally:
+                if not improved:
+                    dispatch_checkpoint.unlink(missing_ok=True)
             if no_improvement >= int(base["early_stop"]):
                 break
         selected_epoch, selected_score = select_checkpoint_epoch(history, metric_name)
-        best_epoch = selected_epoch
-        best_score = -math.inf if selected_score is None else selected_score
-        best_checkpoint = checkpoint_dir / f"epoch_{best_epoch:03d}.pt"
+        if not has_best_checkpoint or selected_score is None or not best_checkpoint.is_file():
+            raise ContractError("NO_FINITE_VALIDATION_METRIC_FOR_CHECKPOINT")
+        if selected_epoch != best_epoch or not math.isclose(selected_score, best_score, rel_tol=0.0, abs_tol=0.0):
+            raise ContractError("INCREMENTAL_CHECKPOINT_SELECTION_MISMATCH")
         selection = {
             "event": "checkpoint_selected",
             "metric": f"valid.{metric_name}",
@@ -278,10 +364,9 @@ def train_model(
             "epoch": best_epoch,
             "score": None if best_score == -math.inf else best_score,
         }
-        log_handle.write(json.dumps(selection, ensure_ascii=False, separators=(",", ":")) + "\n")
-    if best_checkpoint is None:
-        raise ContractError("NO_CHECKPOINT_SELECTED")
-    atomic_write_json(artifact_dir / "selected_checkpoint.json", {**selection, "path": best_checkpoint.relative_to(experiment_dir).as_posix()})
+        persisted_selection = {**selection, "score": persisted_metric(selection["score"])}
+        log_handle.write(json.dumps(persisted_selection, ensure_ascii=False, separators=(",", ":")) + "\n")
+    atomic_write_json(artifact_dir / "selected_checkpoint.json", {**persisted_selection, "path": best_checkpoint.relative_to(experiment_dir).as_posix()})
     return TrainingOutcome(best_checkpoint, best_epoch, None if best_score == -math.inf else best_score, history)
 
 

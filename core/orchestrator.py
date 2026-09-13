@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.agent_runtime import AgentRuntime, build_validation_evidence
+from core.agent_runtime import AgentRuntime, build_fama_training_history, build_validation_evidence
 from core.configuration import materialize_initial_config
 from core.contract_validator import apply_validated_proposal, validate_proposal
 from core.errors import ContractError, DiagAgentError, IsolationError, ResumeError
@@ -230,7 +230,18 @@ class Orchestrator:
                 atomic_write_json(joint_path, joint_evidence)
             proposal = runtime.rass_final(clem, shortlist, joint_evidence, contract_feedback=contract_feedback)
         else:
-            proposal = runtime.specialist(agent, clem, evidence, contract_feedback=contract_feedback)
+            model_training_history = None
+            if agent == "FAMA":
+                model_training_history = build_fama_training_history(
+                    self.experiments_dir / evidence["experiment_id"]
+                )
+            proposal = runtime.specialist(
+                agent,
+                clem,
+                evidence,
+                contract_feedback=contract_feedback,
+                model_training_history=model_training_history,
+            )
         atomic_write_json(path, proposal)
         return proposal
 
