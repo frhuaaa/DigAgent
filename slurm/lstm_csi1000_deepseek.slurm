@@ -14,7 +14,7 @@ set -Eeuo pipefail
 
 readonly PROJECT_ROOT="/finance_ML/huafengrui/DigAgent"
 readonly PYTHON_BIN="/home/huafengrui/anaconda3/envs/qlib/bin/python"
-readonly SUBMIT_CONFIG="submit/lstm_csi1000_gpt.json"
+readonly SUBMIT_CONFIG="submit/lstm_csi1000_deepseek.json"
 
 cd "${PROJECT_ROOT}"
 mkdir -p slurm_logs

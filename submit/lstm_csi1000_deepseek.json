@@ -1,13 +1,13 @@
 {
   "task": {
-    "name": "lstm_csi1000_gpt",
+    "name": "lstm_csi1000_deepseek",
     "market": "cn",
     "benchmark": "SH000852",
     "instruments": "csi1000",
     "target": "Ref($close, -2) / Ref($close, -1) - 1",
     "train_start_time": "2020-01-01",
     "train_end_time": "2023-12-31",
-    "valid_start_time": "2024-01-01",
+    "valid_start_time": "2024-07-01",
     "valid_end_time": "2024-12-31",
     "test_start_time": "2025-01-01",
     "test_end_time": "2026-06-30",
