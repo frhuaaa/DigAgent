@@ -1,0 +1,25 @@
+version: 1
+agent: RAPA
+layer: portfolio
+group_rule: exactly_one_parameter_per_round
+
+parameters:
+  risk_aversion:
+    type: float
+    minimum: 0.1
+    maximum: 2.0
+    max_relative_change_per_round: null
+  turnover_penalty:
+    type: float
+    minimum: 0.1
+    maximum: 2.0
+    max_relative_change_per_round: null
+  alpha_scale:
+    type: float
+    minimum: 0.0008
+    maximum: 0.0015
+    max_relative_change_per_round: null
+
+# null means there is no additional per-step percentage cap. A proposal may
+# select any new value inside the inclusive global bounds, but exactly one of
+# the three parameters may change in a round.

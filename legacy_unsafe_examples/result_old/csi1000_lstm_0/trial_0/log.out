@@ -1,0 +1,21 @@
+epoch=0 train_loss=0.9979 train_ic=0.0170 valid_loss=0.9988 valid_ic=0.0120 valid_rank_ic=0.0074 epoch_test_human_audit_only test_loss=1.0073 test_ic=0.0034 test_rank_ic=-0.0020
+epoch=1 train_loss=0.9979 train_ic=0.0205 valid_loss=0.9989 valid_ic=0.0062 valid_rank_ic=-0.0043 epoch_test_human_audit_only test_loss=1.0072 test_ic=0.0070 test_rank_ic=0.0032
+epoch=2 train_loss=0.9974 train_ic=0.0250 valid_loss=0.9985 valid_ic=0.0175 valid_rank_ic=0.0141 epoch_test_human_audit_only test_loss=1.0071 test_ic=0.0065 test_rank_ic=0.0035
+epoch=3 train_loss=0.9975 train_ic=0.0270 valid_loss=0.9989 valid_ic=0.0077 valid_rank_ic=0.0003 epoch_test_human_audit_only test_loss=1.0069 test_ic=0.0119 test_rank_ic=0.0091
+epoch=4 train_loss=0.9974 train_ic=0.0269 valid_loss=0.9992 valid_ic=0.0185 valid_rank_ic=0.0120 epoch_test_human_audit_only test_loss=1.0070 test_ic=0.0129 test_rank_ic=-0.0065
+epoch=5 train_loss=0.9970 train_ic=0.0323 valid_loss=0.9991 valid_ic=0.0158 valid_rank_ic=0.0075 epoch_test_human_audit_only test_loss=1.0068 test_ic=0.0164 test_rank_ic=0.0015
+epoch=6 train_loss=0.9969 train_ic=0.0336 valid_loss=0.9992 valid_ic=0.0208 valid_rank_ic=0.0169 epoch_test_human_audit_only test_loss=1.0071 test_ic=0.0155 test_rank_ic=0.0042
+epoch=7 train_loss=0.9967 train_ic=0.0394 valid_loss=0.9995 valid_ic=0.0083 valid_rank_ic=0.0043 epoch_test_human_audit_only test_loss=1.0070 test_ic=0.0181 test_rank_ic=0.0106
+epoch=8 train_loss=0.9965 train_ic=0.0395 valid_loss=0.9994 valid_ic=0.0085 valid_rank_ic=0.0064 epoch_test_human_audit_only test_loss=1.0074 test_ic=0.0129 test_rank_ic=0.0129
+epoch=9 train_loss=0.9963 train_ic=0.0442 valid_loss=1.0000 valid_ic=0.0115 valid_rank_ic=0.0056 epoch_test_human_audit_only test_loss=1.0073 test_ic=0.0175 test_rank_ic=0.0059
+epoch=10 train_loss=0.9959 train_ic=0.0444 valid_loss=0.9996 valid_ic=0.0076 valid_rank_ic=0.0036 epoch_test_human_audit_only test_loss=1.0073 test_ic=0.0151 test_rank_ic=0.0094
+epoch=11 train_loss=0.9957 train_ic=0.0478 valid_loss=0.9996 valid_ic=0.0110 valid_rank_ic=0.0056 epoch_test_human_audit_only test_loss=1.0070 test_ic=0.0185 test_rank_ic=0.0023
+epoch=12 train_loss=0.9955 train_ic=0.0486 valid_loss=1.0000 valid_ic=0.0089 valid_rank_ic=0.0041 epoch_test_human_audit_only test_loss=1.0071 test_ic=0.0187 test_rank_ic=0.0102
+epoch=13 train_loss=0.9954 train_ic=0.0504 valid_loss=1.0002 valid_ic=0.0083 valid_rank_ic=0.0035 epoch_test_human_audit_only test_loss=1.0072 test_ic=0.0192 test_rank_ic=0.0085
+epoch=14 train_loss=0.9952 train_ic=0.0504 valid_loss=1.0008 valid_ic=0.0022 valid_rank_ic=-0.0106 epoch_test_human_audit_only test_loss=1.0072 test_ic=0.0205 test_rank_ic=0.0062
+epoch=15 train_loss=0.9953 train_ic=0.0522 valid_loss=1.0005 valid_ic=0.0125 valid_rank_ic=0.0110 epoch_test_human_audit_only test_loss=1.0073 test_ic=0.0200 test_rank_ic=0.0013
+epoch=16 train_loss=0.9950 train_ic=0.0547 valid_loss=1.0002 valid_ic=0.0163 valid_rank_ic=0.0141 epoch_test_human_audit_only test_loss=1.0075 test_ic=0.0173 test_rank_ic=0.0049
+selected_epoch=6 early_stop_metric=icir best_score=0.1447
+checkpoint_test_model human_audit_only ic=0.0155 icir=0.1140 rank_ic=0.0042 rank_icir=0.0272
+checkpoint_test_provenance human_audit_only source_task=0_0 checkpoint_sha256=b6ad6c1dca6836b62fae55f83a009b2966bac0bd8cf09a811da40729c316cd4c sha256_before=b6ad6c1dca6836b62fae55f83a009b2966bac0bd8cf09a811da40729c316cd4c sha256_after=b6ad6c1dca6836b62fae55f83a009b2966bac0bd8cf09a811da40729c316cd4c
+test_backtest human_audit_only risk_aversion=1.0000 turnover_penalty=1.0000 annualized_return=0.3627 sharpe=1.8755 information_ratio=0.4990 max_drawdown=-0.1540 turnover=0.1154

@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "round_budget": {
+    "source": "task.trials",
+    "max_adaptive_rounds": 10,
+    "round0_excluded": true,
+    "repeated_uncertain_or_falsified_limit": 10,
+    "specialist_proposal_attempts_per_round": 2,
+    "contract_correction_attempts_per_round": 1,
+    "both_attempts_rejected_action": "RECORD_CONTRACT_REJECTED_AND_CONSUME_ROUND"
+  },
+  "run_storage": {
+    "root_template": "runs/{task.name}",
+    "task_name_pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    "mutable_subdirectories": [
+      "configs",
+      "experiments",
+      "memory"
+    ],
+    "existing_run_policy": "RESUME_ONLY_IF_SUBMIT_PATH_AND_SHA256_MATCH",
+    "mismatch_action": "FAIL_WITHOUT_OVERWRITE",
+    "rapa_recovery_checkpoint_hash_source": "accepted_parent_config",
+    "rapa_recovery_requires_reused_from_parent_match": true
+  },
+  "clem": {
+    "minimum_intervention_confidence": 0.5,
+    "below_threshold_action": "NO_INTERVENTION"
+  },
+  "agent_runtime": {
+    "config_path": "configs/agent_models.json",
+    "selection_source": "submit.agent",
+    "freeze_before_round0": true,
+    "model_or_effort_change_requires_new_trajectory": true
+  },
+  "execution_device": {
+    "request_source": "task.GPU",
+    "cuda_index_is_zero_based": true,
+    "startup_resolution": "use requested CUDA index only when torch.cuda.is_available() and index < torch.cuda.device_count(); otherwise use cpu",
+    "startup_unavailable_action": "WARN_AND_USE_CPU",
+    "freeze_resolved_device_before_round0": true,
+    "record_in_initial_provenance": [
+      "requested_device",
+      "resolved_device",
+      "fallback_reason",
+      "torch_version",
+      "cuda_runtime_version"
+    ],
+    "mid_trajectory_cuda_failure_action": "FATAL_NO_DEVICE_SWITCH"
+  },
+  "result_contract": {
+    "schema_path": "schemas/result.schema.json",
+    "top_level_field_count": 27,
+    "metric_field_count": 26,
+    "integer_field": "n_periods",
+    "float_serialization_decimals": 3,
+    "excess_return_definition": "strategy_net_daily_return - aligned_benchmark_daily_return",
+    "excess_sharpe_field": "information_ratio"
+  },
+  "researcher_test_output": {
+    "enabled_per_round": true,
+    "required_for_every_successfully_executed_round": true,
+    "directory": "experiments/{experiment_id}/test",
+    "per_epoch_model_metrics": {
+      "enabled": true,
+      "timing": "IMMEDIATELY_AFTER_EACH_EPOCH_CHECKPOINT",
+      "execution_boundary": "SEPARATE_RESEARCHER_SIDE_EVALUATOR",
+      "log_path": "experiments/{experiment_id}/test/epoch_metrics.jsonl",
+      "record_contains": [
+        "epoch",
+        "checkpoint_id",
+        "train_ic",
+        "train_icir",
+        "train_rank_ic",
+        "train_rank_icir",
+        "valid_ic",
+        "valid_icir",
+        "valid_rank_ic",
+        "valid_rank_icir",
+        "test_ic",
+        "test_icir",
+        "test_rank_ic",
+        "test_rank_icir"
+      ],
+      "trainer_receives_test_metrics": false
+    },
+    "selected_checkpoint_full_test_timing": "AFTER_VALIDATION_CHECKPOINT_AND_ADAPTIVE_OUTPUTS_ARE_SEALED",
+    "result_path": "experiments/{experiment_id}/test/result.json",
+    "result_schema_path": "schemas/result.schema.json",
+    "result_float_serialization_decimals": 3,
+    "optional_artifacts": [
+      "experiments/{experiment_id}/test/test_alpha.csv",
+      "experiments/{experiment_id}/test/portfolio_daily_diagnostics.csv"
+    ],
+    "adaptive_read_access": false,
+    "researcher_job_failure_changes_adaptive_state": false,
+    "may_affect_checkpoint_routing_gate_memory_acceptance_rollback_or_stopping": false,
+    "post_trajectory_audit": {
+      "path": "test/researcher_outputs_audit.json",
+      "runs_in_isolated_subprocess": true,
+      "reports_presence_and_valid_completion_only": true,
+      "contains_test_metrics": false,
+      "affects_adaptive_state": false
+    }
+  },
+  "portfolio_feasibility": {
+    "target_invested_weight": 1.0,
+    "infeasible_full_investment_action": "INVEST_MAXIMUM_FEASIBLE_AND_HOLD_CASH",
+    "cash_daily_return": 0.0,
+    "relax_asset_or_directional_bounds": false,
+    "infeasibility_is_fatal": false,
+    "daily_diagnostic_fields": [
+      "target_invested_weight",
+      "feasible_min_invested_weight",
+      "feasible_max_invested_weight",
+      "full_position_feasible",
+      "invested_weight",
+      "invested_weight_shortfall",
+      "feasibility_reason_code"
+    ],
+    "shortfall_is_tradeoff_guardrail": true
+  },
+  "sharpe_noise": {
+    "method": "paired_moving_block_bootstrap",
+    "bootstrap_samples": 2000,
+    "block_length_trading_days": 20,
+    "random_seed": 0,
+    "standard_error_ddof": 1,
+    "epsilon_multiplier": 1.96,
+    "epsilon_definition": "max(1.96 * std(bootstrap_delta_sharpe, ddof=1), numerical_equivalence_tolerance(parent_sharpe, candidate_sharpe))",
+    "insufficient_data_verdict": "UNCERTAIN"
+  },
+  "hard_performance_constraints": [],
+  "data_integrity_and_contract_failures_remain_fatal": true,
+  "validation_gate": {
+    "acceptance_rule_status": "FROZEN",
+    "acceptance_metric": "validation_sharpe_plus_mechanism_and_tradeoff",
+    "numerical_equivalence": {
+      "absolute_tolerance": 1e-12,
+      "relative_tolerance": 1e-10,
+      "tolerance_definition": "max(absolute_tolerance, relative_tolerance * max(abs(parent_statistic), abs(candidate_statistic)))",
+      "delta_at_or_below_tolerance": "CANONICALIZE_TO_ZERO",
+      "effective_epsilon_definition": "max(bootstrap_epsilon, numerical_equivalence_tolerance)",
+      "applies_to": [
+        "sharpe",
+        "mechanism_metrics",
+        "tradeoff_guardrails"
+      ]
+    },
+    "secondary_metrics_affect_verdict": true,
+    "mechanism_match_affects_verdict": true,
+    "formal_adaptation_allowed_by_gate_contract": true,
+    "promotion_verdicts": [
+      "SUPPORTED",
+      "PARTIALLY_SUPPORTED"
+    ],
+    "structural_promotion_exception": {
+      "experiment_id": "EXP_001",
+      "agent": "RASS",
+      "group": "initial_feature_bootstrap",
+      "selection_mode": "agent_exploration_using_train_only_evidence",
+      "deterministic_selector_forbidden": true,
+      "required_initial_feature_count": 6,
+      "required_added_feature_count": 4,
+      "required_final_feature_count": 10,
+      "rass_exploration_stages": 2,
+      "agent_shortlist_size": 12,
+      "final_selection_must_be_subset_of_shortlist": true,
+      "shortlist_and_final_selection_data": "TRAIN_ONLY",
+      "validation_visible_to_rass": false,
+      "deterministic_candidate_eligibility": {
+        "minimum_total_coverage": 0.9,
+        "minimum_valid_ic_date_ratio": 0.8,
+        "minimum_nonconstant_cross_section_ratio": 0.9,
+        "duplicate_anchor_forbidden": true,
+        "eligibility_is_not_factor_ranking": true
+      },
+      "stage1_redundancy_estimation": {
+        "method": "deterministic_evenly_spaced_row_sample",
+        "maximum_rows": 20000
+      },
+      "stage2_joint_evidence_uses_full_train_daily_cross_sections": true,
+      "preserve_initial_features_and_order": true,
+      "requires_contract_pass": true,
+      "requires_successful_complete_execution": true,
+      "gate_verdict_is_audit_only": true,
+      "acceptance_reason": "mandatory_rass_structural_initialization",
+      "freeze_alpha_after_promotion": true,
+      "later_rass_routes_forbidden": true
+    },
+    "sharpe_states": {
+      "IMPROVED": "delta_sharpe > epsilon_sharpe",
+      "UNCHANGED": "abs(delta_sharpe) <= epsilon_sharpe",
+      "WORSE": "delta_sharpe < -epsilon_sharpe"
+    },
+    "mechanism_states": {
+      "MATCH": "every declared target metric improves in its expected direction by more than its bootstrap epsilon",
+      "PARTIAL": "at least one but not every declared target metric improves by more than epsilon, and none worsens by more than epsilon",
+      "INCONCLUSIVE": "every declared target metric remains within its bootstrap epsilon",
+      "OPPOSITE": "at least one declared target metric moves opposite to its expected direction by more than its bootstrap epsilon"
+    },
+    "tradeoff": {
+      "noise_method": "same paired moving-block bootstrap parameters as sharpe_noise",
+      "metric_epsilon_definition": "max(1.96 * std(bootstrap_oriented_metric_delta, ddof=1), numerical_equivalence_tolerance(parent_metric, candidate_metric))",
+      "material_degradation_definition": "observed_oriented_metric_delta > metric_epsilon",
+      "guardrails": [
+        {
+          "metric": "max_drawdown_magnitude",
+          "definition": "abs(max_drawdown)",
+          "higher_is_worse": true
+        },
+        {
+          "metric": "annual_volatility",
+          "higher_is_worse": true
+        },
+        {
+          "metric": "one_way_turnover_mean",
+          "higher_is_worse": true
+        },
+        {
+          "metric": "transaction_cost_drag_mean",
+          "definition": "mean daily transaction cost rate",
+          "higher_is_worse": true
+        },
+        {
+          "metric": "portfolio_concentration_mean",
+          "definition": "mean daily sum(weight_i ** 2)",
+          "higher_is_worse": true
+        },
+        {
+          "metric": "invested_weight_shortfall_mean",
+          "definition": "1 - invested_weight_mean",
+          "higher_is_worse": true
+        }
+      ],
+      "missing_required_guardrail_action": "UNCERTAIN"
+    },
+    "partially_supported_enabled": true,
+    "partially_supported_accepts_candidate": true,
+    "verdict_order": [
+      "if sharpe_state == WORSE: FALSIFIED",
+      "else if mechanism_state == OPPOSITE: FALSIFIED",
+      "else if tradeoff has material degradation: FALSIFIED",
+      "else if required sharpe, mechanism, or guardrail evidence is unavailable: UNCERTAIN",
+      "else if sharpe_state == IMPROVED and mechanism_state == MATCH: SUPPORTED",
+      "else if sharpe_state == IMPROVED: PARTIALLY_SUPPORTED",
+      "else if sharpe_state == UNCHANGED and mechanism_state in [MATCH, PARTIAL]: PARTIALLY_SUPPORTED",
+      "else: UNCERTAIN"
+    ],
+    "sharpe_worse_other_metrics_improve_accepts_candidate": false
+  },
+  "memory_retrieval": {
+    "top_k": null,
+    "retrieve_entire_validation_safe_memory_each_round": true,
+    "ordering": [
+      "round_ascending",
+      "experiment_id_ascending"
+    ],
+    "role_specific_projection_allowed": true,
+    "truncation_allowed": false
+  },
+  "anti_repetition": {
+    "same_accepted_parent_rejected_parameter_retry": "FORBIDDEN",
+    "rejected_verdicts": [
+      "FALSIFIED",
+      "UNCERTAIN"
+    ],
+    "accepted_parent_change_resets_parameter_eligibility": true,
+    "contract_rejected_attempts_are_recorded_in_memory": true
+  },
+  "intervention_spaces": {
+    "FAMA": "agents/FAMA/intervention_space.yaml",
+    "RAPA": "agents/RAPA/intervention_space.yaml",
+    "RASS": "agents/RASS/intervention_space.yaml"
+  }
+}

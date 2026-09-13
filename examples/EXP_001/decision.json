@@ -1,0 +1,40 @@
+{
+  "experiment_id": "EXP_001",
+  "round": 1,
+  "clem": {
+    "selected_agent": "RASS",
+    "selected_layer": "alpha",
+    "failure_summary": "The six-feature baseline has insufficient representation breadth.",
+    "supporting_evidence": ["EXP_000 contains the frozen six-feature bootstrap baseline."],
+    "why_not_other_layers": ["The mandatory alpha bootstrap precedes model and portfolio adaptation."],
+    "intervention_goal": "Expand the feature representation from six to ten factors.",
+    "confidence": 1.000
+  },
+  "specialist": {
+    "agent": "RASS",
+    "selected_group": "initial_feature_bootstrap",
+    "method": "agent_factor_exploration",
+    "local_diagnosis": "The anchors emphasize contemporaneous price ratios and one-day lags but lack medium-horizon momentum, smoothing, dispersion, and price-volume interaction.",
+    "initial_features": [
+      "$open/$close", "$high/$close", "$low/$close", "$vwap/$close",
+      "Ref($close, 1)/$close", "Ref($volume, 1)/($volume+1e-12)"
+    ],
+    "added_features": [
+      {"id": "ROC5", "expression": "Ref($close, 5)/$close"},
+      {"id": "MA5", "expression": "Mean($close, 5)/$close"},
+      {"id": "STD20", "expression": "Std($close, 20)/$close"},
+      {"id": "CORR5", "expression": "Corr($close, Log($volume+1), 5)"}
+    ],
+    "reasoning": "The Agent selected four complementary Alpha158 factors after comparing complete train-only evidence. This is an illustrative choice, not a frozen rule or recommended winning subset.",
+    "alternatives_considered": ["BETA5", "RSQR5", "WVMA5"],
+    "expected_signature": {"validation_ic": "stable_or_improve", "validation_sharpe": "stable_or_improve"},
+    "falsification_condition": "The broader representation is falsified if validation Sharpe worsens materially or its declared mechanism moves opposite.",
+    "confidence": 0.720,
+    "evidence_refs": ["artifacts/rass_train_evidence.json"]
+  },
+  "contract": {
+    "status": "PASSED",
+    "reason_codes": [],
+    "verified": ["train_only_evidence", "append_only", "six_plus_four_equals_ten", "catalog_membership", "no_test_access"]
+  }
+}

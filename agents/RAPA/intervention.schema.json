@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "agent": {"const": "RAPA"},
+    "selected_group": {"const": "portfolio_objective"},
+    "local_diagnosis": {"type": "string", "minLength": 1},
+    "hypothesis": {"type": "string", "minLength": 1},
+    "diff": {
+      "type": "array", "minItems": 1, "maxItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "op": {"const": "replace"},
+          "path": {"enum": ["z_portfolio.alpha_scale", "z_portfolio.risk_aversion", "z_portfolio.turnover_penalty"]},
+          "old_value": {"type": "number"},
+          "new_value": {"type": "number"}
+        },
+        "required": ["op", "path", "old_value", "new_value"], "additionalProperties": false
+      }
+    },
+    "reasoning": {"type": "string", "minLength": 1},
+    "expected_signature": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {"enum": ["sharpe_ratio", "annual_volatility", "one_way_turnover_mean", "transaction_cost_drag_mean", "portfolio_concentration_mean", "invested_weight_shortfall_mean", "alpha_term_mean", "risk_term_mean", "turnover_term_mean"]},
+          "direction": {"enum": ["increase", "decrease", "stable_or_improve"]}
+        },
+        "required": ["metric", "direction"], "additionalProperties": false
+      }
+    },
+    "falsification_condition": {"type": "string", "minLength": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "required": ["agent", "selected_group", "local_diagnosis", "hypothesis", "diff", "reasoning", "expected_signature", "falsification_condition", "confidence"],
+  "additionalProperties": false
+}
+

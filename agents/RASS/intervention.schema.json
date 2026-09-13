@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "agent": {"const": "RASS"},
+    "method": {"const": "agent_factor_exploration"},
+    "data_split": {"const": "train"},
+    "selected_group": {"const": "initial_feature_bootstrap"},
+    "target_subset_size": {"const": 10},
+    "initial_features": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "string"}},
+    "added_features": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "expression": {"type": "string"}},
+        "required": ["id", "expression"], "additionalProperties": false
+      }
+    },
+    "selected_features": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"type": "string"}},
+    "hypothesis": {"type": "string", "minLength": 1},
+    "local_diagnosis": {"type": "string", "minLength": 1},
+    "reasoning": {"type": "string", "minLength": 1},
+    "alternatives_considered": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "expected_signature": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {"enum": ["ic", "icir", "rank_ic", "rank_icir", "sharpe_ratio"]},
+          "direction": {"enum": ["increase", "stable_or_improve"]}
+        },
+        "required": ["metric", "direction"], "additionalProperties": false
+      }
+    },
+    "falsification_condition": {"type": "string", "minLength": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "alpha_frozen_after_success": {"const": true},
+    "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "data_hash": {"type": "string"}, "catalog_hash": {"type": "string"},
+        "label_hash": {"type": "string"}, "config_hash": {"type": "string"},
+        "evidence_code_hash": {"type": "string"},
+        "shortlist_evidence_hash": {"type": "string"}
+      },
+      "required": ["data_hash", "catalog_hash", "label_hash", "config_hash", "evidence_code_hash", "shortlist_evidence_hash"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["agent", "method", "data_split", "selected_group", "target_subset_size", "initial_features", "added_features", "selected_features", "hypothesis", "local_diagnosis", "reasoning", "alternatives_considered", "expected_signature", "falsification_condition", "confidence", "alpha_frozen_after_success", "evidence_refs", "provenance"],
+  "additionalProperties": false
+}

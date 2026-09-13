@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "selected_agent": {
+      "type": "string",
+      "enum": [
+        "RASS",
+        "FAMA",
+        "RAPA",
+        "NO_INTERVENTION"
+      ]
+    },
+    "selected_layer": {
+      "type": "string",
+      "enum": [
+        "alpha",
+        "model",
+        "portfolio",
+        "none"
+      ]
+    },
+    "failure_summary": {
+      "type": "string"
+    },
+    "supporting_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "why_not_other_layers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "intervention_goal": {
+      "type": ["string", "null"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": [
+    "selected_agent",
+    "selected_layer",
+    "failure_summary",
+    "supporting_evidence",
+    "why_not_other_layers",
+    "intervention_goal",
+    "confidence"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "selected_agent": {
+            "const": "NO_INTERVENTION"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "selected_layer": {
+            "const": "none"
+          },
+          "intervention_goal": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "confidence": {
+            "minimum": 0.5
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "selected_agent": {
+            "const": "RASS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "selected_layer": {
+            "const": "alpha"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "selected_agent": {
+            "const": "FAMA"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "selected_layer": {
+            "const": "model"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "selected_agent": {
+            "const": "RAPA"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "selected_layer": {
+            "const": "portfolio"
+          }
+        }
+      }
+    }
+  ]
+}

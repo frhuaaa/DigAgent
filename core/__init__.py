@@ -1,0 +1,2 @@
+"""Deterministic DiagAgent orchestration primitives."""
+

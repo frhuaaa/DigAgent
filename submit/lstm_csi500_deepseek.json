@@ -1,0 +1,105 @@
+{
+  "task": {
+    "name": "lstm_csi500_deepseek",
+    "market": "cn",
+    "benchmark": "SH000905",
+    "instruments": "csi500",
+    "target": "Ref($close, -2) / Ref($close, -1) - 1",
+    "train_start_time": "2020-01-01",
+    "train_end_time": "2023-12-31",
+    "valid_start_time": "2024-01-01",
+    "valid_end_time": "2024-12-31",
+    "test_start_time": "2025-01-01",
+    "test_end_time": "2026-06-30",
+    "primary_metric": "sharpe",
+    "provider_uri": "./data/cn_data",
+    "trials" : 10,
+    "seed": 0,
+    "GPU": 0
+  },
+  "agent": {
+    "model": "deepseek-v4-flash",
+    "reasoning_effort": "medium"
+  },
+  "pipeline_contract": "qlib_ts_lstm_v1",
+  "z_alpha": {
+    "feature_pool": "Alpha158",
+    "selected_features": [
+      "$open/$close",
+      "$high/$close",
+      "$low/$close",
+      "$vwap/$close",
+      "Ref($close, 1)/$close",
+      "Ref($volume, 1)/($volume+1e-12)"
+    ]
+  },
+  "z_model": {
+    "model_name": "lstm",
+    "sequence_mode": "sampler",
+    "sequence_window": 20,
+    "base_params": {
+      "n_epochs": 100,
+      "early_stop": 5,
+      "loss": "mse",
+      "metric": "ic",
+      "optimizer": "adam",
+      "batch_size": 2048,
+      "n_jobs": 0,
+      "label_norm": true
+    },
+    "train_params": {
+      "lr": 0.001,
+      "hidden_size": 64,
+      "dropout": 0.0,
+      "weight_decay": 0.0
+    },
+    "model_params": {
+      "model_layer": 2,
+      "use_pe": false,
+      "use_bn": false,
+      "use_ln": false
+    }
+  },
+  "z_portfolio": {
+    "ret_path": "./data/portfolio/c_2_c_1D.csv",
+    "limit_up_mask_path": "./data/portfolio/mask_limit_up_1D.csv",
+    "limit_down_mask_path": "./data/portfolio/mask_limit_down_1D.csv",
+    "init_cash": 10000000.0,
+    "buy_commission": 0.0001,
+    "sell_commission": 0.0001,
+    "sell_tax": 0.0005,
+    "buy_slippage": 0.0005,
+    "sell_slippage": 0.0005,
+    "full_position": true,
+    "long_only": true,
+
+    "comment_delay": "使用 alpha[T]，在 T+1 收盘成交, 第 T+2 行收益",
+    "trade_delay_days": 1,
+    "return_delay_days": 2,
+
+    "comment_mw": "单只股票最大权重, 0.02 表示 2%",
+    "max_weight": 0.02,
+    "min_weight": 0.0,
+
+    "comment_count": "每日Top新入候选数量；优化器股票池还需并入全部已有持仓，因此总数可以超过此值",
+    "candidate_count": 100,
+
+    "comment_drop": "丢弃几乎为0的持仓",
+    "weight_threshold_for_drop": 1e-05,
+
+    "comment_risk_look": "小于20天使用固定方差, 20-59当前所有, 过去60",
+    "comment_risk_mode": "sample_cov, ρ = 1 等同于diagonal，相当于只考虑自身的方差, 反之 只考虑相关性",
+    "lookback": 60,
+    "min_lookback": 20,
+    "risk_model_mode": "diagonal",
+    "cov_shrink_to_diag": 0.5,
+    "variance_floor": 1e-06,
+    "max_iter": 200,
+    "tol": 1e-10,
+
+    "risk_aversion": 1,
+    "turnover_penalty": 1,
+    "alpha_scale": 0.001
+  }
+
+}

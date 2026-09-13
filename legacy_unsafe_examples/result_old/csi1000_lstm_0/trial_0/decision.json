@@ -1,0 +1,48 @@
+{
+  "experiment_id": "EXP_007",
+  "round": 7,
+
+  "clem": {
+    "selected_agent": "RAPA",
+    "selected_layer": "portfolio",
+    "failure_summary": "Prediction quality remains stable, but portfolio implementation efficiency is still weak.",
+    "supporting_evidence": [
+      "Validation IC and RankIC remain stable.",
+      "One-way turnover remains elevated.",
+      "Transaction-cost drag remains material."
+    ],
+    "why_not_other_layers": [
+      "No new evidence indicates alpha deterioration.",
+      "The train-validation gap is within the accepted range."
+    ],
+    "intervention_goal": "Improve prediction-to-portfolio conversion efficiency.",
+    "confidence": 0.860
+  },
+
+  "specialist": {
+    "agent": "RAPA",
+    "local_diagnosis": "Turnover regularization appears insufficient relative to current portfolio responsiveness.",
+
+    "parameter": "turnover_penalty",
+    "old_value": 1.000,
+    "new_value": 1.170,
+    "direction": "increase",
+    "relative_change": 0.170,
+
+    "reasoning": "Turnover and transaction-cost drag remain high while predictive quality is stable. Increasing turnover regularization is expected to reduce unnecessary allocation changes without materially weakening useful alpha exposure.",
+
+    "expected_signature": {
+      "one_way_turnover_mean": "decrease",
+      "sharpe_ratio": "stable_or_improve",
+      "max_drawdown": "not_materially_worse"
+    },
+
+    "falsification_condition": "The intervention is falsified if turnover does not decrease, or if validation Sharpe deteriorates materially after the intervention.",
+
+    "confidence": 0.820
+  },
+
+  "contract": {
+    "status": "PASSED"
+  }
+}

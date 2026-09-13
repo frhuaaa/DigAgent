@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "agent": {"const": "FAMA"},
+    "selected_group": {"enum": ["train_params", "model_params"]},
+    "local_diagnosis": {"type": "string", "minLength": 1},
+    "hypothesis": {"type": "string", "minLength": 1},
+    "diff": {
+      "type": "array", "minItems": 1, "maxItems": 2,
+      "items": {
+        "type": "object",
+        "properties": {
+          "op": {"const": "replace"},
+          "path": {"type": "string"},
+          "old_value": {},
+          "new_value": {}
+        },
+        "required": ["op", "path", "old_value", "new_value"],
+        "additionalProperties": false
+      }
+    },
+    "reasoning": {"type": "string", "minLength": 1},
+    "expected_signature": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {"enum": ["ic", "icir", "rank_ic", "rank_icir", "sharpe_ratio", "annual_volatility"]},
+          "direction": {"enum": ["increase", "decrease", "stable_or_improve"]}
+        },
+        "required": ["metric", "direction"], "additionalProperties": false
+      }
+    },
+    "falsification_condition": {"type": "string", "minLength": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "required": ["agent", "selected_group", "local_diagnosis", "hypothesis", "diff", "reasoning", "expected_signature", "falsification_condition", "confidence"],
+  "additionalProperties": false
+}
+

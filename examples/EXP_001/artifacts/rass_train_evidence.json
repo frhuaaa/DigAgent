@@ -1,0 +1,23 @@
+{
+  "example_only": true,
+  "data_split": "train",
+  "catalog": "Alpha158",
+  "catalog_size": 158,
+  "selection_rule": "agent_judgment_not_fixed_ranking",
+  "candidate_evidence_excerpt": [
+    {"id": "ROC5", "expression": "Ref($close, 5)/$close", "ic": 0.018, "rank_ic": 0.020, "coverage": 0.997, "max_abs_anchor_corr": 0.420},
+    {"id": "MA5", "expression": "Mean($close, 5)/$close", "ic": 0.016, "rank_ic": 0.019, "coverage": 0.997, "max_abs_anchor_corr": 0.510},
+    {"id": "STD20", "expression": "Std($close, 20)/$close", "ic": -0.014, "rank_ic": -0.017, "coverage": 0.991, "max_abs_anchor_corr": 0.280},
+    {"id": "CORR5", "expression": "Corr($close, Log($volume+1), 5)", "ic": 0.011, "rank_ic": 0.014, "coverage": 0.988, "max_abs_anchor_corr": 0.190},
+    {"id": "BETA5", "expression": "Slope($close, 5)/$close", "ic": 0.015, "rank_ic": 0.016, "coverage": 0.997, "max_abs_anchor_corr": 0.660},
+    {"id": "RSQR5", "expression": "Rsquare($close, 5)", "ic": 0.006, "rank_ic": 0.008, "coverage": 0.997, "max_abs_anchor_corr": 0.230}
+  ],
+  "provenance": {
+    "data_hash": "example-not-a-formal-hash",
+    "catalog_hash": "example-not-a-formal-hash",
+    "label_hash": "example-not-a-formal-hash",
+    "config_hash": "example-not-a-formal-hash",
+    "evidence_code_hash": "example-not-a-formal-hash"
+  },
+  "contains_validation_or_test_data": false
+}

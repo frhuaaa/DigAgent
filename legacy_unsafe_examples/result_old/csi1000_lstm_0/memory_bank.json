@@ -1,0 +1,41 @@
+{
+  "experiment_id": "EXP_001",
+  "round": 1,
+  "parent_experiment": "EXP_000",
+
+  "state_before": {
+    "alpha": "No dominant alpha-layer failure.",
+    "model": "Evidence of over-capacity and generalization gap.",
+    "portfolio": "Constraints and implementation behavior acceptable."
+  },
+
+  "clem_diagnosis": {
+    "selected_layer": "model",
+    "failure_summary": "Model over-capacity is the dominant unresolved failure."
+  },
+
+  "agent": "FAMA",
+
+  "selected_group": "train_params",
+
+  "intervention": [
+    "hidden_size: 80 -> 64",
+    "dropout: 0.25 -> 0.30"
+  ],
+  
+  "expected_signature": {
+    "validation_ic": "stable_or_improve",
+    "generalization_gap": "decrease",
+    "sharpe_ratio": "not_materially_worse"
+  },
+
+  "observed_signature": {
+    "validation_ic": "improved",
+    "generalization_gap": "decreased",
+    "sharpe_ratio": "improved"
+  },
+
+  "verdict": "SUPPORTED",
+
+  "accepted": true
+}

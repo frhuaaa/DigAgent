@@ -1,0 +1,52 @@
+version: 1
+agent: RASS
+layer: alpha
+group_rule: exactly_one_group_per_round
+
+groups:
+  initial_feature_bootstrap:
+    operation: append_to_target_count
+    target_path: z_alpha.selected_features
+    source_path: z_alpha.feature_pool
+    required_round: 1
+    one_time_only: true
+    required_initial_count: 6
+    target_total_count: 10
+    additions_per_round: 4
+    selection_mode: agent_exploration
+    exploration_stages: 2
+    shortlist_size: 12
+    final_selection_must_be_subset_of_shortlist: true
+    deterministic_eligibility:
+      minimum_total_coverage: 0.90
+      minimum_valid_ic_date_ratio: 0.80
+      minimum_nonconstant_cross_section_ratio: 0.90
+      duplicate_anchor_forbidden: true
+    shortlist_joint_evidence:
+      - daily_cross_sectional_pairwise_correlation
+      - anchor_residual_ic
+      - anchor_residual_icir
+      - anchor_residual_rank_ic
+      - positive_residual_ic_ratio
+    agent_must_use_train_only_evidence: true
+    validation_visible_to_rass: false
+    deterministic_selector_forbidden: true
+    require_resolvable_by_qlib: true
+    require_not_already_selected: true
+    preserve_all_initial_features: true
+    forbid_removal: true
+    forbid_replacement: true
+    forbid_manual_expression_outside_pool: true
+    freeze_alpha_after_success: true
+    acceptance_mode: mandatory_structural_initialization
+    validation_gate_verdict_usage: audit_only
+
+# Before a formal run, resolve the named Qlib feature_pool into a deterministic
+# candidate catalog, persist it with a content hash, and freeze it. For the
+# current trajectory, EXP_001 gives the RASS agent train-only factor evidence;
+# the agent preserves the six initial features and explores the catalog to
+# propose exactly four non-duplicate additions. Deterministic code validates
+# membership, evidence provenance, counts, and leakage boundaries, but does not
+# select or rank factors on the agent's behalf. After successful
+# execution the ten-feature alpha is accepted and frozen regardless of the
+# audit-only validation verdict. RASS cannot run again in this trajectory.

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "agent": {"const": "RASS"},
+    "stage": {"const": "train_shortlist"},
+    "data_split": {"const": "train"},
+    "shortlist_size": {"const": 12},
+    "shortlist": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "expression": {"type": "string"}
+        },
+        "required": ["id", "expression"],
+        "additionalProperties": false
+      }
+    },
+    "reasoning": {"type": "string", "minLength": 1},
+    "diversity_rationale": {"type": "string", "minLength": 1},
+    "evidence_hash": {"type": "string", "minLength": 1}
+  },
+  "required": ["agent", "stage", "data_split", "shortlist_size", "shortlist", "reasoning", "diversity_rationale", "evidence_hash"],
+  "additionalProperties": false
+}

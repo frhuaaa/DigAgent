@@ -1,0 +1,13 @@
+{
+  "experiment_id": "EXP_001",
+  "accepted_parent_experiment_id": "EXP_000",
+  "gate_verdict": "PARTIALLY_SUPPORTED",
+  "sharpe_state": "IMPROVED",
+  "mechanism_state": "PARTIAL",
+  "tradeoff_state": "NO_MATERIAL_DEGRADATION",
+  "promotion": true,
+  "promotion_reason": "mandatory_rass_structural_initialization",
+  "gate_verdict_usage": "audit_only_for_exp_001",
+  "alpha_frozen_after_promotion": true,
+  "contains_test_derived_data": false
+}

@@ -1,0 +1,2 @@
+"""Validation-safe metric implementations."""
+

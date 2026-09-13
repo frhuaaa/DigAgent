@@ -1,0 +1,33 @@
+# Local secrets. Never commit these files.
+.env
+.env.*
+!.env.example
+
+# Local datasets and repair snapshots. Transfer these to servers separately.
+data/
+data_repairs/
+
+# Generated experiment state and artifacts.
+runs/
+
+# Python caches and local tooling state.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Model checkpoints and serialized runtime objects.
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+
+# Local editor and operating-system files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

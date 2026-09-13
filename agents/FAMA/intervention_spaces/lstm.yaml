@@ -1,0 +1,42 @@
+train_params:
+  lr:
+    type: float
+    minimum: 0.0001
+    maximum: 0.01
+    scale: log
+
+  hidden_size:
+    type: integer
+    minimum: 16
+    maximum: 128
+    step: 8
+
+  dropout:
+    type: float
+    minimum: 0.0
+    maximum: 0.5
+    step: 0.05
+
+  weight_decay:
+    type: float
+    allowed_zero: true
+    minimum_nonzero: 0.000001
+    maximum: 0.001
+    scale: log
+
+model_params:
+  model_layer:
+    type: integer
+    allowed: [1, 2, 3, 4]
+
+  use_pe:
+    type: boolean
+    allowed: [false, true]
+
+  use_bn:
+    type: boolean
+    allowed: [false, true]
+
+  use_ln:
+    type: boolean
+    allowed: [false, true]

@@ -1,0 +1,23 @@
+version: 2
+agent: FAMA
+layer: model
+
+# This file is the authoritative router. Resolve the selected model-specific
+# space solely from the frozen z_model.model_name value.
+selection_field: z_model.model_name
+unsupported_model_action: reject
+fallback_space: null
+
+model_spaces:
+  lstm: intervention_spaces/lstm.yaml
+  gru: intervention_spaces/gru.yaml
+  alstm: intervention_spaces/alstm.yaml
+
+group_rule: exactly_one_group_per_round
+max_changed_parameters_per_round: 2
+coupling_rule: all_changes_must_share_one_falsifiable_mechanism
+cross_group_changes_allowed: false
+
+# The Contract Validator loads this router first, resolves exactly one mapped
+# file, and validates names, types, grids, and inclusive bounds from that file.
+# It must never union spaces across models or silently fall back.

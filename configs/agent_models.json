@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "providers": {
+    "openai": {
+      "api_key_env": "OPENAI_API_KEY",
+      "base_url": "https://api.openai.com/v1",
+      "api": "responses"
+    },
+    "deepseek": {
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "base_url": "https://api.deepseek.com",
+      "api": "responses"
+    },
+    "openai_compatible": {
+      "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+      "base_url_env": "OPENAI_COMPATIBLE_BASE_URL",
+      "api": "chat_completions"
+    }
+  },
+  "models": {
+    "gpt-6-astra": {
+      "provider": "openai",
+      "model_id": "gpt-6-astra",
+      "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"]
+    },
+    "gpt-5.6-sol": {
+      "provider": "openai",
+      "model_id": "gpt-5.6-sol",
+      "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+    },
+    "gpt-5.6-terra": {
+      "provider": "openai",
+      "model_id": "gpt-5.6-terra",
+      "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+    },
+    "gpt-5.6-luna": {
+      "provider": "openai",
+      "model_id": "gpt-5.6-luna",
+      "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+    },
+    "deepseek-v4-flash": {
+      "provider": "deepseek",
+      "model_id": "deepseek-v4-flash",
+      "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "input_modalities": ["text"]
+    },
+    "deepseek-v4-pro": {
+      "provider": "deepseek",
+      "model_id": "deepseek-v4-pro",
+      "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "input_modalities": ["text"]
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "provider": "deepseek",
+      "model_id": "deepseek-v4-flash-vision-exp",
+      "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "input_modalities": ["text", "image"],
+      "experimental": true
+    }
+  }
+}
