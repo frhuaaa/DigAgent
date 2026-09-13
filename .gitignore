@@ -31,3 +31,7 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Slurm scheduler logs (keep the directory itself in Git).
+slurm_logs/*.out
+slurm_logs/*.err
