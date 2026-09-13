@@ -44,6 +44,7 @@ fi
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 echo "job_id=${SLURM_JOB_ID}"
 echo "job_name=${SLURM_JOB_NAME}"
@@ -53,6 +54,7 @@ echo "project_root=${PROJECT_ROOT}"
 echo "python=${PYTHON_BIN}"
 echo "submit=${SUBMIT_CONFIG}"
 echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
+echo "cublas_workspace_config=${CUBLAS_WORKSPACE_CONFIG}"
 
 nvidia-smi
 "${PYTHON_BIN}" -c 'import qlib, torch; print("torch={} cuda_build={} cuda_available={} device_count={} qlib={}".format(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count(), getattr(qlib, "__version__", "unknown")))'
