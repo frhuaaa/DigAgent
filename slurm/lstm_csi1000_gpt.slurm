@@ -55,7 +55,7 @@ echo "submit=${SUBMIT_CONFIG}"
 echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
 
 nvidia-smi
-"${PYTHON_BIN}" -c 'import qlib, torch; print(f"torch={torch.__version__} cuda_build={torch.version.cuda} cuda_available={torch.cuda.is_available()} device_count={torch.cuda.device_count()} qlib={getattr(qlib, "__version__", "unknown")}")'
+"${PYTHON_BIN}" -c 'import qlib, torch; print("torch={} cuda_build={} cuda_available={} device_count={} qlib={}".format(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count(), getattr(qlib, "__version__", "unknown")))'
 
 if ! "${PYTHON_BIN}" -c 'import torch, sys; sys.exit(0 if torch.cuda.is_available() and torch.cuda.device_count() >= 1 else 1)'; then
   echo "FATAL: allocated GPU is not visible to PyTorch" >&2
