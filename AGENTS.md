@@ -424,6 +424,16 @@ After trajectory finalization, an isolated researcher process writes
 every successfully executed round has its required researcher artifacts; it
 contains no test metrics and cannot affect adaptive state.
 
+The same post-finalization researcher process materializes
+`<run-root>/experiments/EXP_FINAL/` from the final accepted experiment's
+isolated test directory. It stores an exact test `result.json` snapshot plus
+JSON, CSV, and Markdown reports containing IC, ICIR, Rank IC, Rank ICIR; net
+and excess ARR, volatility, drawdown, Sharpe/IR, Calmar, Sortino, win rate; and
+mean one-way turnover. `manifest.json` records the accepted source experiment,
+stop reason, final-config hash, and output hashes. `EXP_FINAL` is post-hoc and
+researcher-only; it must never be scanned as an adaptive experiment or affect
+agents, evidence, memory, promotion, rollback, routing, or stopping.
+
 Before a formal trajectory, freeze prompts, intervention spaces, data splits,
 evaluator, costs, alignment, constraints, gate thresholds, retrieval, stopping,
 seeds/budget policy, and checkpoint rule. Do not tune the frozen contract using

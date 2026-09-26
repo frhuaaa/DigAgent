@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core.io_utils import atomic_write_json, load_json
+from scripts.build_exp_final import materialize_exp_final
 
 
 REQUIRED_TEST_ARTIFACTS = (
@@ -67,6 +68,7 @@ def main() -> int:
     run_root = Path(args.run_root).resolve()
     output = run_root / "test" / "researcher_outputs_audit.json"
     atomic_write_json(output, build_researcher_outputs_audit(run_root))
+    materialize_exp_final(run_root)
     return 0
 
 

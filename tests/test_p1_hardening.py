@@ -18,9 +18,10 @@ from core.contract_validator import validate_proposal
 from core.errors import ContractError
 from core.executor import _expected_checkpoint_config_hash
 from core.evidence_builder import _rass_period_mask, build_rass_shortlist_evidence, rass_evidence_periods
-from core.io_utils import atomic_write_json
+from core.io_utils import atomic_write_json, load_json
 from core.orchestrator import _memory_candidate, _memory_contract_rejection
 from scripts.audit_researcher_outputs import REQUIRED_TEST_ARTIFACTS, build_researcher_outputs_audit
+from scripts.build_exp_final import materialize_exp_final
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -281,6 +282,46 @@ class MemoryStateTests(unittest.TestCase):
 
 
 class ResearcherAuditTests(unittest.TestCase):
+    def test_exp_final_snapshots_only_final_accepted_isolated_test_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = Path(tmp)
+            source_test = run_root / "experiments" / "EXP_007" / "test"
+            result = {
+                "ic": 0.01, "icir": 0.1, "rank_ic": 0.02, "rank_icir": 0.2,
+                "annual_return": 0.3, "annual_volatility": 0.2, "max_drawdown": -0.1,
+                "sharpe_ratio": 1.5, "calmar_ratio": 3.0, "sortino_ratio": 2.0,
+                "win_rate": 0.55, "excess_annual_return": 0.1,
+                "excess_annual_volatility": 0.08, "excess_max_drawdown": -0.05,
+                "information_ratio": 1.25, "excess_calmar_ratio": 2.0,
+                "excess_sortino_ratio": 1.6, "excess_win_rate": 0.52,
+                "one_way_turnover_mean": 0.06,
+            }
+            atomic_write_json(run_root / "configs" / "state.json", {
+                "status": "FINISHED", "accepted_experiment_id": "EXP_007",
+                "stop_reason": "ADAPTIVE_ROUND_BUDGET_EXHAUSTED",
+                "contains_test_derived_data": False,
+            })
+            atomic_write_json(run_root / "configs" / "final_frozen.json", {"frozen": True})
+            atomic_write_json(source_test / "result.json", result)
+            atomic_write_json(source_test / "researcher_complete.json", {"status": "COMPLETE"})
+
+            final_root = materialize_exp_final(run_root)
+
+            self.assertEqual(load_json(final_root / "test" / "result.json"), result)
+            report = load_json(final_root / "test" / "final_report.json")
+            self.assertTrue(report["researcher_only"])
+            self.assertFalse(report["adaptive_state_affected"])
+            self.assertEqual(report["source_experiment_id"], "EXP_007")
+            self.assertEqual(len(report["sections"]["signal"]), 4)
+            self.assertEqual(len(report["sections"]["net_return"]), 7)
+            self.assertEqual(len(report["sections"]["excess_return"]), 7)
+            self.assertEqual(len(report["sections"]["turnover"]), 1)
+            markdown = (final_root / "test" / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("Sharpe (IR)", markdown)
+            self.assertIn("One-way turnover mean", markdown)
+            self.assertEqual(load_json(final_root / "manifest.json")["source_accepted_experiment_id"], "EXP_007")
+            self.assertFalse(load_json(run_root / "configs" / "state.json")["contains_test_derived_data"])
+
     def test_audit_reports_missing_outputs_without_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_root = Path(tmp)
