@@ -35,6 +35,18 @@ def diagnostics_with_sharpe(target: float) -> pd.DataFrame:
     return frame
 
 
+def ensemble_metrics(parent: float, deltas: tuple[float, float, float]) -> tuple[dict, dict]:
+    return (
+        {"seed_signal_metrics": [{"seed": seed, "ic": parent} for seed in (0, 1, 2)]},
+        {
+            "seed_signal_metrics": [
+                {"seed": seed, "ic": parent + delta}
+                for seed, delta in zip((0, 1, 2), deltas)
+            ]
+        },
+    )
+
+
 class GateTests(unittest.TestCase):
     def test_fama_ic_improvement_cannot_override_falsified_global_gate(self):
         parent = diagnostics_with_sharpe(1.0)
@@ -92,6 +104,33 @@ class GateTests(unittest.TestCase):
         self.assertTrue(gate["fama_ic_override"]["seed_consistent"])
         self.assertTrue(gate["fama_ic_override"]["applied"])
 
+    def test_fama_ic_override_cannot_hide_temporal_sharpe_reversal(self):
+        parent = diagnostics_with_sharpe(1.0)
+        candidate = parent.copy()
+        midpoint = len(candidate) // 2
+        candidate.loc[candidate.index[:midpoint], "net_return"] += 0.0002
+        candidate.loc[candidate.index[midpoint:], "net_return"] -= 0.0002
+        parent_signal = pd.DataFrame(
+            {"ic": np.full(80, 0.05), "rank_ic": np.full(80, 0.02)},
+            index=pd.date_range("2024-01-01", periods=80),
+        )
+        candidate_signal = parent_signal.copy()
+        candidate_signal["ic"] += 0.0012
+        parent_ensemble, candidate_ensemble = ensemble_metrics(0.05, (0.0012, 0.0013, 0.0014))
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            parent_signal,
+            candidate_signal,
+            [{"metric": "unsupported_metric", "direction": "increase"}],
+            fama_ic_override=True,
+            parent_ensemble_diagnostics=parent_ensemble,
+            candidate_ensemble_diagnostics=candidate_ensemble,
+        )
+        self.assertFalse(gate["partial_promotion_stability"]["temporal"]["no_material_reversal"])
+        self.assertFalse(gate["fama_ic_override"]["applied"])
+        self.assertFalse(gate["promotion"])
+
     def test_fama_ic_change_at_or_below_threshold_does_not_override(self):
         parent = diagnostics_with_sharpe(1.0)
         candidate = diagnostics_with_sharpe(0.5)
@@ -121,6 +160,49 @@ class GateTests(unittest.TestCase):
         self.assertEqual(accepted["sharpe"]["acceptance_delta"], 0.002)
         self.assertFalse(rejected["promotion"])
         self.assertEqual(rejected["gate_verdict"], "UNCERTAIN")
+
+    def test_partial_support_requires_both_chronological_halves_to_be_stable(self):
+        parent = diagnostics_with_sharpe(1.0)
+        candidate = parent.copy()
+        midpoint = len(candidate) // 2
+        candidate.loc[candidate.index[:midpoint], "net_return"] += 0.0008
+        candidate.loc[candidate.index[midpoint:], "net_return"] -= 0.0002
+        signal = pd.DataFrame(
+            {"ic": np.linspace(0.01, 0.02, 80), "rank_ic": np.linspace(0.01, 0.02, 80)},
+            index=pd.date_range("2024-01-01", periods=80),
+        )
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            signal,
+            signal,
+            [{"metric": "ic", "direction": "increase"}],
+        )
+        self.assertEqual(gate["partial_promotion_stability"]["temporal"]["periods"][1]["state"], "WORSE")
+        self.assertEqual(gate["gate_verdict"], "UNCERTAIN")
+        self.assertFalse(gate["promotion"])
+
+    def test_model_partial_support_requires_majority_seed_stability(self):
+        parent = diagnostics_with_sharpe(1.0)
+        candidate = diagnostics_with_sharpe(1.01)
+        signal = pd.DataFrame(
+            {"ic": np.linspace(0.01, 0.02, 80), "rank_ic": np.linspace(0.01, 0.02, 80)},
+            index=pd.date_range("2024-01-01", periods=80),
+        )
+        parent_ensemble, candidate_ensemble = ensemble_metrics(0.05, (0.001, -0.002, -0.001))
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            signal,
+            signal,
+            [{"metric": "ic", "direction": "increase"}],
+            fama_ic_override=True,
+            parent_ensemble_diagnostics=parent_ensemble,
+            candidate_ensemble_diagnostics=candidate_ensemble,
+        )
+        self.assertFalse(gate["partial_promotion_stability"]["model_seed_stable"])
+        self.assertEqual(gate["gate_verdict"], "UNCERTAIN")
+        self.assertFalse(gate["promotion"])
 
     def test_fixed_sharpe_improvement_does_not_override_opposite_mechanism(self):
         parent_signal = pd.DataFrame({"ic": np.linspace(0.03, 0.04, 80), "rank_ic": np.linspace(0.03, 0.04, 80)}, index=pd.date_range("2024-01-01", periods=80))

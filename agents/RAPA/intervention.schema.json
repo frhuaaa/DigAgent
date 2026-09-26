@@ -25,7 +25,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "metric": {"enum": ["sharpe_ratio", "annual_volatility", "one_way_turnover_mean", "transaction_cost_drag_mean", "portfolio_concentration_mean", "invested_weight_shortfall_mean", "alpha_term_mean", "risk_term_mean", "turnover_term_mean"]},
+          "metric": {"enum": ["sharpe_ratio", "annual_volatility", "one_way_turnover_mean", "transaction_cost_drag_mean", "portfolio_concentration_mean", "invested_weight_shortfall_mean", "risk_term_mean", "turnover_term_mean"]},
           "direction": {"enum": ["increase", "decrease", "stable_or_improve"]}
         },
         "required": ["metric", "direction"], "additionalProperties": false

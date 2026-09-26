@@ -208,9 +208,9 @@
   "data_integrity_and_contract_failures_remain_fatal": true,
   "validation_gate": {
     "acceptance_rule_status": "FROZEN",
-    "acceptance_metric": "validation_sharpe_plus_mechanism_and_tradeoff_with_fixed_sharpe_epsilon",
+    "acceptance_metric": "validation_sharpe_plus_mechanism_tradeoff_and_predeclared_stability_with_fixed_sharpe_epsilon",
     "sharpe_acceptance_delta": 0.002,
-    "acceptance_comparison": "classify Sharpe with fixed epsilon 0.002, then apply the frozen mechanism/trade-off verdict matrix",
+    "acceptance_comparison": "classify Sharpe with fixed epsilon 0.002, then apply the frozen mechanism/trade-off matrix and predeclared partial-promotion stability checks",
     "numerical_equivalence": {
       "absolute_tolerance": 1e-12,
       "relative_tolerance": 1e-10,
@@ -231,12 +231,22 @@
       "SUPPORTED",
       "PARTIALLY_SUPPORTED"
     ],
+    "partially_supported_promotion_stability": {
+      "status": "FROZEN",
+      "temporal_method": "split aligned agent-valid daily net returns into two fixed chronological halves",
+      "minimum_periods_per_half": 20,
+      "temporal_pass": "neither half is WORSE and at least one half is IMPROVED using the same fixed Sharpe epsilon 0.002",
+      "model_or_alpha_rerun_seed_pass": "all three seed IC deltas are available, at least two are nonnegative, and the median is nonnegative",
+      "rapa_seed_pass": "NOT_APPLICABLE_BECAUSE_RAPA_REUSES_THE_ACCEPTED_ENSEMBLE_ALPHA",
+      "failure_action": "DOWNGRADE_PROVISIONAL_PARTIALLY_SUPPORTED_TO_UNCERTAIN",
+      "test_evidence_allowed": false
+    },
     "fama_validation_ic_promotion_override": {
       "enabled": true,
       "applies_only_to_agent": "FAMA",
       "metric": "mean_daily_validation_ic",
       "epsilon_ic": 0.001,
-      "promotion_condition": "ordinary verdict is UNCERTAIN; ensemble delta_valid_ic > 0.001; at least two of three seed IC deltas are positive; median seed delta_valid_ic > 0.001; no worse Sharpe, opposite mechanism, or material trade-off",
+      "promotion_condition": "ordinary verdict is UNCERTAIN; ensemble delta_valid_ic > 0.001; at least two of three seed IC deltas are positive; median seed delta_valid_ic > 0.001; no worse full-window Sharpe, no material Sharpe reversal in either fixed chronological half, no opposite mechanism, and no material trade-off",
       "equality_action": "NO_OVERRIDE",
       "may_override_falsified": false,
       "ordinary_gate_verdict_is_preserved_for_audit": true,
@@ -331,7 +341,8 @@
       ],
       "diagnostic_only_not_tradeoff_guardrails": [
         "one_way_turnover_mean",
-        "transaction_cost_drag_mean"
+        "transaction_cost_drag_mean",
+        "alpha_term_mean"
       ],
       "missing_required_guardrail_action": "UNCERTAIN"
     },
@@ -343,8 +354,8 @@
       "else if tradeoff has material degradation: FALSIFIED",
       "else if required sharpe, mechanism, or guardrail evidence is unavailable: UNCERTAIN",
       "else if sharpe_state == IMPROVED and mechanism_state == MATCH: SUPPORTED",
-      "else if sharpe_state == IMPROVED: PARTIALLY_SUPPORTED",
-      "else if sharpe_state == UNCHANGED and mechanism_state in [MATCH, PARTIAL]: PARTIALLY_SUPPORTED",
+      "else if sharpe_state == IMPROVED and partial-promotion stability passes: PARTIALLY_SUPPORTED",
+      "else if sharpe_state == UNCHANGED and mechanism_state in [MATCH, PARTIAL] and partial-promotion stability passes: PARTIALLY_SUPPORTED",
       "else: UNCERTAIN"
     ],
     "sharpe_worse_other_metrics_improve_accepts_candidate": false

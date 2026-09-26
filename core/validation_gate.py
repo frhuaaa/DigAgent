@@ -20,6 +20,7 @@ NUMERICAL_ABS_TOL = 1e-12
 NUMERICAL_REL_TOL = 1e-10
 SHARPE_ACCEPTANCE_DELTA = 0.002
 FAMA_IC_ACCEPTANCE_DELTA = 0.001
+TEMPORAL_STABILITY_MIN_PERIODS = 20
 
 
 def _numerical_tolerance(parent_value: float, candidate_value: float) -> float:
@@ -65,6 +66,65 @@ def _aligned(parent: pd.DataFrame, candidate: pd.DataFrame) -> tuple[pd.DataFram
         candidate = candidate.set_index(pd.to_datetime(candidate["signal_date"])).drop(columns=["signal_date"])
     common = parent.index.intersection(candidate.index).sort_values()
     return parent.reindex(common), candidate.reindex(common)
+
+
+def _sharpe_state(delta: float | None) -> str:
+    if delta is None or not np.isfinite(delta):
+        return "UNAVAILABLE"
+    if delta > SHARPE_ACCEPTANCE_DELTA:
+        return "IMPROVED"
+    if delta < -SHARPE_ACCEPTANCE_DELTA:
+        return "WORSE"
+    return "UNCHANGED"
+
+
+def _temporal_sharpe_stability(
+    parent: pd.DataFrame,
+    candidate: pd.DataFrame,
+) -> dict:
+    """Check two predeclared chronological halves without optimizing a split."""
+
+    parent, candidate = _aligned(parent, candidate)
+    midpoint = len(parent) // 2
+    slices = (("early", 0, midpoint), ("late", midpoint, len(parent)))
+    periods = []
+    for name, start, stop in slices:
+        parent_slice = parent.iloc[start:stop]
+        candidate_slice = candidate.iloc[start:stop]
+        if len(parent_slice) < TEMPORAL_STABILITY_MIN_PERIODS:
+            delta = None
+        else:
+            parent_sharpe = _sharpe(parent_slice["net_return"])
+            candidate_sharpe = _sharpe(candidate_slice["net_return"])
+            delta = candidate_sharpe - parent_sharpe
+            if not np.isfinite(delta):
+                delta = None
+            elif abs(delta) <= _numerical_tolerance(parent_sharpe, candidate_sharpe):
+                delta = 0.0
+        periods.append({
+            "period": name,
+            "start_signal_date": (
+                str(pd.Timestamp(parent_slice.index.min()).date()) if not parent_slice.empty else None
+            ),
+            "end_signal_date": (
+                str(pd.Timestamp(parent_slice.index.max()).date()) if not parent_slice.empty else None
+            ),
+            "n_periods": int(len(parent_slice)),
+            "delta_sharpe": float(delta) if delta is not None else None,
+            "state": _sharpe_state(delta),
+        })
+    states = [item["state"] for item in periods]
+    available = all(state != "UNAVAILABLE" for state in states)
+    no_reversal = bool(available and "WORSE" not in states)
+    stable = bool(no_reversal and "IMPROVED" in states)
+    return {
+        "method": "fixed_chronological_halves",
+        "minimum_periods_per_half": TEMPORAL_STABILITY_MIN_PERIODS,
+        "periods": periods,
+        "available": available,
+        "no_material_reversal": no_reversal,
+        "stable_for_partial_promotion": stable,
+    }
 
 
 def paired_moving_block_epsilon(
@@ -164,12 +224,10 @@ def evaluate_gate(
     if sharpe_delta is None:
         sharpe_state = "UNAVAILABLE"
         required_unavailable.append("sharpe")
-    elif sharpe_delta > SHARPE_ACCEPTANCE_DELTA:
-        sharpe_state = "IMPROVED"
-    elif sharpe_delta < -SHARPE_ACCEPTANCE_DELTA:
-        sharpe_state = "WORSE"
     else:
-        sharpe_state = "UNCHANGED"
+        sharpe_state = _sharpe_state(sharpe_delta)
+
+    temporal_stability = _temporal_sharpe_stability(aligned_parent, aligned_candidate)
 
     mechanism_records = []
     states = []
@@ -303,6 +361,30 @@ def evaluate_gate(
         and median_seed_delta > FAMA_IC_ACCEPTANCE_DELTA
     )
 
+    model_seed_stable_for_partial = bool(
+        len(finite_seed_deltas) == 3
+        and sum(delta >= 0.0 for delta in finite_seed_deltas) >= 2
+        and median_seed_delta is not None
+        and median_seed_delta >= 0.0
+    )
+    model_rerun = bool(fama_ic_override or freeze_alpha_on_promotion)
+    partial_stability = {
+        "required": verdict == "PARTIALLY_SUPPORTED",
+        "temporal": temporal_stability,
+        "model_seed_check_required": model_rerun,
+        "model_seed_stable": model_seed_stable_for_partial if model_rerun else None,
+        "passed": bool(
+            temporal_stability["stable_for_partial_promotion"]
+            and (not model_rerun or model_seed_stable_for_partial)
+        ),
+    }
+
+    # PARTIALLY_SUPPORTED is deliberately promotable only when its weak full-
+    # window evidence is not hiding a chronological reversal.  Model/alpha
+    # reruns must additionally avoid an ensemble result driven by one seed.
+    if verdict == "PARTIALLY_SUPPORTED" and not partial_stability["passed"]:
+        verdict = "UNCERTAIN"
+
     ordinary_promotion = verdict in {"SUPPORTED", "PARTIALLY_SUPPORTED"}
     # FAMA's IC rule is a narrow rescue for an otherwise UNCERTAIN candidate.
     # It cannot overturn Sharpe deterioration, an opposite mechanism, or a
@@ -316,6 +398,7 @@ def evaluate_gate(
         and mechanism_state != "OPPOSITE"
         and not degraded
         and seed_consistent
+        and temporal_stability["no_material_reversal"]
     )
     # RASS bootstrap candidates use the same portfolio-based Gate as every
     # other candidate.  The flag only freezes alpha after an ordinary promotion;
@@ -340,6 +423,7 @@ def evaluate_gate(
         "mechanism_metrics": mechanism_records,
         "tradeoff_state": tradeoff_state,
         "guardrails": guardrail_records,
+        "partial_promotion_stability": partial_stability,
         "required_evidence_unavailable": sorted(set(required_unavailable)),
         "fama_ic_override": {
             "enabled": bool(fama_ic_override),

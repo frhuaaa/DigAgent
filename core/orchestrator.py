@@ -108,6 +108,7 @@ def _memory_candidate(
             "sharpe_state": gate["sharpe"]["state"],
             "mechanism_state": gate["mechanism_state"],
             "tradeoff_state": gate["tradeoff_state"],
+            "partial_promotion_stability": gate.get("partial_promotion_stability"),
             "fama_ic_override_applied": bool(gate.get("fama_ic_override", {}).get("applied", False)),
         },
         "verdict": gate["gate_verdict"],

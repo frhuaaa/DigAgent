@@ -556,9 +556,21 @@ The deterministic Validation Gate matrix is frozen in
 - an opposite mechanism or material guardrail degradation is `FALSIFIED`;
 - improved Sharpe with full mechanism match and no trade-off is `SUPPORTED`;
 - improved Sharpe without full match is `PARTIALLY_SUPPORTED` when no opposite
-  mechanism or material trade-off exists;
+  mechanism or material trade-off exists and the predeclared stability check
+  below passes;
 - unchanged Sharpe with `MATCH` or `PARTIAL` mechanism evidence is
-  `PARTIALLY_SUPPORTED`; otherwise it is `UNCERTAIN`.
+  `PARTIALLY_SUPPORTED` only when the same stability check passes; otherwise it
+  is `UNCERTAIN`.
+
+For every provisional `PARTIALLY_SUPPORTED` result, split the aligned
+agent-valid daily net-return series into two fixed chronological halves (at
+least 20 observations each). Neither half may have a Sharpe delta below
+`-0.002`, and at least one half must have a delta above `0.002`. When RASS or
+FAMA reruns the model, all three seed-level agent-valid IC deltas must also be
+available, at least two must be nonnegative, and their median must be
+nonnegative. RAPA reuses the accepted ensemble alpha, so this seed-level check
+does not apply to RAPA. A failed stability check downgrades the provisional
+verdict to `UNCERTAIN`; it never reads test evidence.
 
 FAMA has one explicit layer-local promotion override. Compare the candidate's
 full-precision ensemble mean daily agent-valid IC with its accepted parent's
@@ -566,7 +578,8 @@ ensemble value. The override is eligible only when the ordinary verdict is
 `UNCERTAIN`, ensemble `delta_valid_ic > 0.001`, at least two of three member IC
 deltas are positive, and the median member delta is greater than `0.001`.
 It can never override worse Sharpe, an opposite mechanism, a material trade-off,
-or any `FALSIFIED` verdict. Preserve all diagnostics for audit; record promotion reason
+or a material Sharpe reversal in either fixed chronological half, or any
+`FALSIFIED` verdict. Preserve all diagnostics for audit; record promotion reason
 `fama_validation_ic_override` and Gate usage
 `overridden_by_fama_validation_ic`. Equality belongs to the unchanged band.
 This override never applies to RASS or RAPA and never reads test evidence.
@@ -667,6 +680,10 @@ Settled Mean-Variance baseline assumptions:
 - there is no target, preferred range, or reference value for realized
   turnover. RAPA explores whether the current validation regime supports more
   or less turnover through one bounded direction per round;
+- for RAPA, `alpha_term_mean` is a diagnostic trade-off rather than a direct
+  mechanism target and must not appear in `expected_signature`. Declare the
+  directly controlled turnover, cost, or risk term instead; net validation
+  Sharpe remains the acceptance objective;
 - on the first successful portfolio build only, use an effective
   `turnover_penalty = 0` because there is no prior portfolio whose displacement
   should be penalized. Charge the normal buy costs and use the configured

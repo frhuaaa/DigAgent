@@ -39,5 +39,11 @@ acceptance objective. An increase in turnover or cost is not independently a
 failure when the net Sharpe improvement clears the frozen gate. Conversely, a
 turnover reduction alone is not success.
 
+`alpha_term_mean` is a diagnostic trade-off, not a direct mechanism target.
+Do not place it in `expected_signature`: changing a portfolio penalty can
+rationally sacrifice some optimizer alpha term while improving net Sharpe.
+Use the directly controlled turnover, cost, or risk term to state the expected
+mechanism, and discuss the alpha-term movement only in reasoning.
+
 Return only JSON conforming to the supplied schema. State expected metrics and
 directions precisely enough for the deterministic Validation Gate to evaluate.
