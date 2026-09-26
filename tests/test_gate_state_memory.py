@@ -26,7 +26,111 @@ def diagnostics(scale: float = 1.0) -> pd.DataFrame:
     })
 
 
+def diagnostics_with_sharpe(target: float) -> pd.DataFrame:
+    frame = diagnostics()
+    centered = np.sin(np.arange(len(frame)) / 5.0)
+    centered = (centered - centered.mean()) / centered.std(ddof=1)
+    volatility = 0.01
+    frame["net_return"] = centered * volatility + target / np.sqrt(252.0) * volatility
+    return frame
+
+
 class GateTests(unittest.TestCase):
+    def test_fama_ic_improvement_cannot_override_falsified_global_gate(self):
+        parent = diagnostics_with_sharpe(1.0)
+        candidate = diagnostics_with_sharpe(0.5)
+        parent_signal = pd.DataFrame(
+            {"ic": np.full(80, 0.05), "rank_ic": np.full(80, 0.02)},
+            index=pd.date_range("2024-01-01", periods=80),
+        )
+        candidate_signal = parent_signal.copy()
+        candidate_signal["ic"] += 0.0011
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            parent_signal,
+            candidate_signal,
+            [{"metric": "ic", "direction": "increase"}],
+            fama_ic_override=True,
+        )
+        self.assertEqual(gate["gate_verdict"], "FALSIFIED")
+        self.assertFalse(gate["promotion"])
+        self.assertEqual(gate["promotion_reason"], "rollback")
+        self.assertFalse(gate["fama_ic_override"]["applied"])
+
+    def test_fama_ic_override_requires_ensemble_and_seed_consistency(self):
+        parent = diagnostics_with_sharpe(1.0)
+        candidate = diagnostics_with_sharpe(1.0)
+        parent_signal = pd.DataFrame(
+            {"ic": np.full(80, 0.05), "rank_ic": np.full(80, 0.02)},
+            index=pd.date_range("2024-01-01", periods=80),
+        )
+        candidate_signal = parent_signal.copy()
+        candidate_signal["ic"] += 0.0012
+        parent_ensemble = {
+            "seed_signal_metrics": [{"seed": seed, "ic": 0.05} for seed in (0, 1, 2)]
+        }
+        candidate_ensemble = {
+            "seed_signal_metrics": [
+                {"seed": 0, "ic": 0.0513},
+                {"seed": 1, "ic": 0.0512},
+                {"seed": 2, "ic": 0.0498},
+            ]
+        }
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            parent_signal,
+            candidate_signal,
+            [{"metric": "unsupported_metric", "direction": "increase"}],
+            fama_ic_override=True,
+            parent_ensemble_diagnostics=parent_ensemble,
+            candidate_ensemble_diagnostics=candidate_ensemble,
+        )
+        self.assertEqual(gate["gate_verdict"], "UNCERTAIN")
+        self.assertTrue(gate["promotion"])
+        self.assertTrue(gate["fama_ic_override"]["seed_consistent"])
+        self.assertTrue(gate["fama_ic_override"]["applied"])
+
+    def test_fama_ic_change_at_or_below_threshold_does_not_override(self):
+        parent = diagnostics_with_sharpe(1.0)
+        candidate = diagnostics_with_sharpe(0.5)
+        parent_signal = pd.DataFrame(
+            {"ic": np.full(80, 0.05), "rank_ic": np.full(80, 0.02)},
+            index=pd.date_range("2024-01-01", periods=80),
+        )
+        candidate_signal = parent_signal.copy()
+        candidate_signal["ic"] += 0.001
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            parent_signal,
+            candidate_signal,
+            [{"metric": "ic", "direction": "increase"}],
+            fama_ic_override=True,
+        )
+        self.assertFalse(gate["promotion"])
+        self.assertFalse(gate["fama_ic_override"]["applied"])
+
+    def test_sharpe_delta_strictly_above_point_zero_zero_two_promotes(self):
+        signal = pd.DataFrame({"ic": np.linspace(0.01, 0.02, 80), "rank_ic": np.linspace(0.01, 0.02, 80)}, index=pd.date_range("2024-01-01", periods=80))
+        accepted = evaluate_gate(diagnostics_with_sharpe(1.0), diagnostics_with_sharpe(1.0021), signal, signal, [{"metric": "ic", "direction": "increase"}])
+        rejected = evaluate_gate(diagnostics_with_sharpe(1.0), diagnostics_with_sharpe(1.0019), signal, signal, [{"metric": "ic", "direction": "increase"}])
+        self.assertTrue(accepted["promotion"])
+        self.assertEqual(accepted["gate_verdict"], "PARTIALLY_SUPPORTED")
+        self.assertEqual(accepted["sharpe"]["acceptance_delta"], 0.002)
+        self.assertFalse(rejected["promotion"])
+        self.assertEqual(rejected["gate_verdict"], "UNCERTAIN")
+
+    def test_fixed_sharpe_improvement_does_not_override_opposite_mechanism(self):
+        parent_signal = pd.DataFrame({"ic": np.linspace(0.03, 0.04, 80), "rank_ic": np.linspace(0.03, 0.04, 80)}, index=pd.date_range("2024-01-01", periods=80))
+        candidate_signal = pd.DataFrame({"ic": np.linspace(-0.04, -0.03, 80), "rank_ic": np.linspace(-0.04, -0.03, 80)}, index=parent_signal.index)
+        gate = evaluate_gate(diagnostics_with_sharpe(1.0), diagnostics_with_sharpe(1.3), parent_signal, candidate_signal, [{"metric": "ic", "direction": "increase"}])
+        self.assertEqual(gate["sharpe"]["state"], "IMPROVED")
+        self.assertEqual(gate["mechanism_state"], "OPPOSITE")
+        self.assertEqual(gate["gate_verdict"], "FALSIFIED")
+        self.assertFalse(gate["promotion"])
+
     def test_machine_precision_noise_is_not_material_degradation(self):
         parent = diagnostics(1.0)
         candidate = diagnostics(1.0)
@@ -68,13 +172,27 @@ class GateTests(unittest.TestCase):
         self.assertEqual(gate["gate_verdict"], "FALSIFIED")
         self.assertFalse(gate["promotion"])
 
-    def test_structural_rass_promotes_audit_verdict(self):
+    def test_turnover_increase_is_not_an_independent_tradeoff_failure(self):
+        parent = diagnostics(1.0)
+        candidate = diagnostics(1.0)
+        candidate["one_way_turn"] = 0.04
+        signal = pd.DataFrame({"ic": np.linspace(0.01, 0.02, 80), "rank_ic": np.linspace(0.01, 0.02, 80)}, index=pd.date_range("2024-01-01", periods=80))
+        gate = evaluate_gate(
+            parent,
+            candidate,
+            signal,
+            signal,
+            [{"metric": "one_way_turnover_mean", "direction": "increase"}],
+        )
+        self.assertNotEqual(gate["tradeoff_state"], "MATERIAL_DEGRADATION")
+
+    def test_rass_bootstrap_flag_does_not_override_gate(self):
         frame = diagnostics(1.0)
         signal = pd.DataFrame({"ic": np.linspace(0.01, 0.02, 80), "rank_ic": np.linspace(0.01, 0.02, 80)}, index=pd.date_range("2024-01-01", periods=80))
-        gate = evaluate_gate(frame, frame, signal, signal, [{"metric": "ic", "direction": "increase"}], structural_rass_promotion=True)
-        self.assertTrue(gate["promotion"])
-        self.assertEqual(gate["promotion_reason"], "mandatory_rass_structural_initialization")
-        self.assertIn(gate["gate_verdict"], {"SUPPORTED", "PARTIALLY_SUPPORTED", "UNCERTAIN", "FALSIFIED"})
+        gate = evaluate_gate(frame, frame, signal, signal, [{"metric": "ic", "direction": "increase"}], freeze_alpha_on_promotion=True)
+        self.assertFalse(gate["promotion"])
+        self.assertEqual(gate["promotion_reason"], "rollback")
+        self.assertFalse(gate["alpha_frozen_after_promotion"])
 
 
 class StateAndMemoryTests(unittest.TestCase):
@@ -87,9 +205,29 @@ class StateAndMemoryTests(unittest.TestCase):
             store = StateStore(root)
             store.rollback("EXP_001", 2)
             self.assertEqual(load_json(root / "configs" / "current.json"), config)
-            store.promote(config, "EXP_001", 2, structural_rass=True)
+            store.promote(config, "EXP_001", 2, freeze_alpha_on_promotion=True)
             self.assertTrue(load_json(root / "configs" / "current.json")["z_alpha"]["alpha_frozen"])
             self.assertEqual(store.state()["accepted_experiment_id"], "EXP_001")
+
+    def test_three_failure_fallback_freezes_original_five_factor_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {
+                "z_alpha": {"alpha_frozen": False, "selected_features": list(range(5))},
+                "z_model": {"derived": {"d_feat": 5}},
+                "provenance": {},
+            }
+            atomic_write_json(root / "configs" / "current.json", config)
+            atomic_write_json(root / "configs" / "state.json", {
+                "accepted_experiment_id": "EXP_000", "next_round": 3, "status": "ADAPTING",
+            })
+            store = StateStore(root)
+            frozen = store.freeze_five_factor_alpha_after_rass_failures("EXP_003", 4, 3)
+            self.assertTrue(frozen["z_alpha"]["alpha_frozen"])
+            self.assertEqual(frozen["z_alpha"]["selected_features"], list(range(5)))
+            self.assertEqual(frozen["z_model"]["derived"]["d_feat"], 5)
+            self.assertEqual(store.state()["accepted_experiment_id"], "EXP_000")
+            self.assertEqual(store.state()["rass_failed_attempts"], 3)
 
     def test_memory_keeps_rejected_records_and_all_projections(self):
         with tempfile.TemporaryDirectory() as tmp:

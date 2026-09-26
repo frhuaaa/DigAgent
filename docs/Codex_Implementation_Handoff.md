@@ -20,6 +20,30 @@ examples. `AGENTS.md` wins over all existing code. Preserve test isolation,
 validation-only adaptation, schemas, execution alignment, intervention rules,
 and deterministic state transitions. Do not modify source inputs under `data/`.
 
+## Current validation-split amendment
+
+New submissions use explicit `train_valid_*` and `agent_valid_*` task fields.
+Only per-epoch `train_valid` metrics may select or early-stop a checkpoint.
+Run frozen seeds `[0,1,2]` in parallel, select one checkpoint independently per
+seed by `train_valid.ic`, then evaluate all three checkpoints on `agent_valid`.
+Daily cross-sectionally winsorize/z-score each prediction, equal-weight average,
+and renormalize the mean. Write the ensemble as
+`artifacts/agent_valid_alpha.csv` and use its signal/portfolio result for all
+adaptive agents, Gate decisions, and memory. Never use per-epoch agent-valid
+metrics for checkpoint selection. The two periods may currently overlap or be
+identical, but neither may overlap training or isolated test. This amendment
+and `AGENTS.md` override older generic `valid` wording below.
+
+## Prediction-mode amendment
+
+`task.prediction_mode` is the single frozen switch. Supported values are
+`c2c` (legacy default) and `o2o`. Materialization deterministically binds the
+target expression, return panel, directional masks, execution price, return
+definition, and slippage from this value; stale duplicated values in a submit
+must not create a mixed-mode run. Run and shared-RASS namespaces are
+`runs/<instruments>_<agent-name-or-provider>_<prediction-mode>/`, so evidence
+and caches can never cross between C2C and O2O.
+
 ## Required reading
 
 Read, in order:
@@ -66,6 +90,9 @@ Before execution, inspect (do not rewrite) these actual data locations:
 ./data/portfolio/c_2_c_1D.csv
 ./data/portfolio/mask_limit_up_1D.csv
 ./data/portfolio/mask_limit_down_1D.csv
+./data/portfolio/o_2_o_1D.csv
+./data/portfolio/mask_limit_up_open_1D.csv
+./data/portfolio/mask_limit_down_open_1D.csv
 ```
 
 `./agents/FAMA/` still needs its production prompt/schema/runtime integration.
@@ -82,8 +109,8 @@ Before writing implementation code in this repository:
 2. List the actual fields under `z_alpha`, `z_model`, and `z_portfolio`.
 3. Initialize Qlib with repository-relative `./data/cn_data` and inspect the
    existing training, prediction, portfolio, and evaluation entry points.
-4. Use `./data/portfolio/c_2_c_1D.csv` and the two mask files in the same
-   directory; verify their date and asset coverage before Round 0.
+4. Use the return panel and two directional masks selected by
+   `task.prediction_mode`; verify their date and asset coverage before Round 0.
 5. Identify the train/validation/test split definitions and every path that can
    expose test outputs.
 6. Map Qlib long-form predictions to the canonical wide alpha CSV contract in
@@ -98,9 +125,19 @@ Before writing implementation code in this repository:
 
 After mapping and before `EXP_000`, expand the explicitly selected submit JSON
 into one complete runtime configuration at
-`runs/<task.name>/configs/initial.json`. Validate `task.name` as a safe directory
-component, record the selected submit path and SHA256 in provenance, and put all
-mutable state, experiments, and memory under `runs/<task.name>/`. Resume an
+`runs/<instruments>_<agent-name-or-provider>_<prediction-mode>/<task.run_id>/<model-name>/<MMDDHHMM>/configs/initial.json`.
+Validate every path component, record the selected submit path and SHA256 in
+provenance, and keep all mutable state, experiments, and memory under that
+timestamped run root. Store only deterministic RASS evidence at
+`runs/<instruments>_<agent-name-or-provider>_<prediction-mode>/<task.run_id>/rass_train_evidence.json`.
+For year ID `Y`, build evidence from complete calendar years `Y-3`, `Y-2`, and
+`Y-1`, purging each year's last two signal dates. Matching backbones under the
+same year reuse only this evidence; different years do not. Every trajectory
+still runs EXP_000 with five anchors and performs a fresh RASS Agent selection
+for EXP_001. No factor selection is cached or replayed across trajectories. If
+rejected, RASS may select a different three-factor set. Validate reuse with the
+model-independent `rass_evidence_context_hash`, not the full model configuration
+hash. Resume an
 existing run only if its recorded submit hash matches. The Dataset/Handler,
 processors, data keys, loader behavior, and `d_feat` derivation are fixed by the
 seed's `pipeline_contract=qlib_ts_lstm_v1` and the authoritative Markdown
@@ -124,7 +161,7 @@ Phase 5  Validation Gate + atomic promotion/rollback
 Phase 6  shared Memory Bank + retrieval views
 Phase 7  CLEM and specialist integrations
 Phase 8  end-to-end orchestrator + restartability
-Phase 9  physically isolated researcher test runner
+Phase 9  persistent physically isolated researcher test runner (one test Dataset load per experiment)
 ```
 
 After each phase, run its focused tests. Do not proceed past Phase 2 until the same Round 0 input reproduces the same validation artifacts and metrics twice.
@@ -137,12 +174,13 @@ After each phase, run its focused tests. Do not proceed past Phase 2 until the s
 - Resolve all configured data paths from the repository root and never modify
   source files under `data/`.
 - Write validation alpha in the exact date-by-stock wide format and stock-column
-  order of `data/portfolio/c_2_c_1D.csv`; preserve missing predictions as NaN.
+  order of the return panel selected by `task.prediction_mode`; preserve missing
+  predictions as NaN.
 - Generate alpha using exactly the universe named by `task.instruments`. Treat
   stocks in that configured universe with finite alpha on the signal date as
   the complete ranking universe; no second membership filter is applied. Read
   the benchmark instrument from `task.benchmark` through the configured Qlib
-  provider and compute `close[T+2] / close[T+1] - 1`; never substitute an
+  provider and compute the matching C2C or O2O T+1-to-T+2 return; never substitute an
   equal-weight stock benchmark. Use Top100 new-entry candidates union
   all existing holdings as the Mean-Variance optimizer universe. Keep
   `candidate_count=100`; it is not a cap on holdings. Run the Top100/Drop10
@@ -161,7 +199,9 @@ After each phase, run its focused tests. Do not proceed past Phase 2 until the s
   Read the active Agent base model and reasoning effort from `agent` in the
   selected `submit/*.json`, validate both against that catalog, and freeze them
   into the trajectory's initial configuration. The selection applies to
-  LLM-backed CLEM/RASS/FAMA/RAPA. RASS explores factors using train-only
+  LLM-backed CLEM/RASS/FAMA/RAPA. RASS explores factors using frozen annual
+  development evidence for 2021, 2022, 2023, and 2024; because 2024 is visible
+  during factor selection, it must not later be claimed as unseen validation
   evidence; deterministic code validates its boundaries but does not choose its
   factors. Resolve API
   keys from environment references, never log secrets, never silently use a
@@ -173,8 +213,7 @@ After each phase, run its focused tests. Do not proceed past Phase 2 until the s
   Implement training separately and
   support validation checkpoint selection by `ic`, `icir`, `rank_ic`, or
   `rank_icir`, defaulting to `ic`.
-- Use the fixed raw label
-  `Ref($close, -2) / Ref($close, -1) - 1`; train MSE on its daily cross-sectional
+- Use the raw label bound by `task.prediction_mode`; train MSE on its daily cross-sectional
   standardized form while retaining the raw label separately for all four IC
   metrics. Treat predictions as relative scores and never inverse-transform
   them with future label statistics.
@@ -190,9 +229,9 @@ After each phase, run its focused tests. Do not proceed past Phase 2 until the s
   validation/test evaluation must never drop the last batch.
 - Keep contract validation, dependency resolution, metric computation, validation verdicts, state transitions, and test isolation deterministic.
 - Never add test-derived data to prompts, memory, result files, routing, acceptance, rollback, or stopping.
-- Keep per-epoch train/valid metrics in normal logs. Immediately after each
-  epoch checkpoint, a separate researcher-side evaluator appends that epoch's
-  train/valid/test IC, ICIR, RankIC, and RankICIR to
+- Keep per-epoch `train`/`train_valid` metrics in normal logs. Immediately after each
+  epoch checkpoint, one persistent researcher-side evaluator appends that epoch's
+  `train`/`train_valid`/`test` IC, ICIR, RankIC, and RankICIR to
   `test/epoch_metrics.jsonl` without returning test values to the trainer. After
   checkpoint and adaptive-output sealing, it stores the complete 27-field test
   result as `test/result.json`; it may also store
@@ -204,11 +243,20 @@ After each phase, run its focused tests. Do not proceed past Phase 2 until the s
   MDD, Sharpe/IR, Calmar, Sortino, win rates, and turnover diagnostics, using
   the formulas in `AGENTS.md` and `schemas/result.schema.json`.
 - Never treat example values as tuned defaults beyond the frozen values explicitly named in `AGENTS.md`.
-- Implement the frozen Sharpe/mechanism/trade-off verdict and promotion matrix
-  exactly as written in `configs/frozen_contract.json`. Both `SUPPORTED` and
-  `PARTIALLY_SUPPORTED` normally promote a candidate; implement the sole mandatory structural
-  exception for a legal and successfully executed RASS `EXP_001`, retain its
-  normal Gate verdict for audit, and freeze alpha after promotion.
+- Implement the original composite Sharpe/mechanism/trade-off Gate exactly as
+  written in `configs/frozen_contract.json`, using fixed
+  `epsilon_sharpe = 0.002` instead of a Bootstrap-derived Sharpe epsilon.
+  `SUPPORTED` and `PARTIALLY_SUPPORTED` promote. Apply the same Gate to RASS:
+  reject and retry from the five-factor parent with a non-identical three-factor
+  set, then freeze the original five factors after three complete failures. Also
+  implement the FAMA-only validation-IC override: when full-precision mean
+  daily ensemble validation IC improves by more than `0.001` versus the accepted
+  parent, the ordinary verdict is `UNCERTAIN`, at least two of three seed deltas
+  are positive, and their median exceeds `0.001`, promote the FAMA candidate.
+  Never override `FALSIFIED`, worse-Sharpe, opposite-mechanism, or material-
+  trade-off outcomes. Preserve
+  that ordinary verdict for audit and record promotion reason
+  `fama_validation_ic_override`. Never apply this override to RASS or RAPA.
 
 ## Completion definition
 
@@ -219,5 +267,5 @@ The system is complete only when:
 3. Every illegal cross-layer/cross-group/frozen-field proposal is rejected before execution.
 4. Dependency-aware reruns are correct for RASS, FAMA, and RAPA.
 5. The adaptive process cannot read test artifacts even if they exist.
-6. `NO_INTERVENTION`, budget, and frozen stopping rules terminate cleanly.
+6. Budget exhaustion is the only normal adaptive stopping rule and terminates cleanly.
 7. The final accepted config is frozen and independently testable.

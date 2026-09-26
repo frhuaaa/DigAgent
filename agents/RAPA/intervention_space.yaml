@@ -2,6 +2,9 @@ version: 1
 agent: RAPA
 layer: portfolio
 group_rule: exactly_one_parameter_per_round
+search_rule: directional_probe_then_expand
+maximum_attempts_per_parameter: 4
+initial_probe_max_absolute_step: 0.1
 
 parameters:
   risk_aversion:
@@ -14,12 +17,9 @@ parameters:
     minimum: 0.1
     maximum: 2.0
     max_relative_change_per_round: null
-  alpha_scale:
-    type: float
-    minimum: 0.0008
-    maximum: 0.0015
-    max_relative_change_per_round: null
 
-# null means there is no additional per-step percentage cap. A proposal may
-# select any new value inside the inclusive global bounds, but exactly one of
-# the three parameters may change in a round.
+# The first trial for a parameter is a local probe of at most 0.1. After an
+# accepted probe, continue in the same direction with a non-shrinking step.
+# After a rejected probe, reverse direction with a step of at most 0.1. The
+# Validation Gate retains the best accepted value; each parameter has at most
+# four evaluated trials over the trajectory.

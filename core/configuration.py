@@ -3,10 +3,12 @@ from __future__ import annotations
 import copy
 import importlib.metadata
 import json
+import os
 import platform
 import re
 import sys
 import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +19,13 @@ from qlib.data import D
 
 from adapters.portfolio_runner import read_panel
 from adapters.qlib_runner import (
-    RAW_LABEL_EXPRESSION,
     initialize_qlib,
     instrument_to_panel_code,
     resolve_feature_catalog,
     resolve_market_instruments,
 )
 from core.errors import ContractError, DataCoverageError, ResumeError
-from core.evidence_builder import build_rass_train_evidence
+from core.evidence_builder import build_rass_train_evidence, rass_evidence_context
 from core.io_utils import (
     atomic_write_json,
     canonical_json_bytes,
@@ -34,6 +35,7 @@ from core.io_utils import (
     sha256_paths,
     write_json_exclusive,
 )
+from core.prediction_mode import apply_prediction_mode, prediction_mode, prediction_mode_preset
 from core.split_guard import aligned_trade_return_dates, purged_signal_dates, split_window, validate_panel_coverage
 
 
@@ -44,7 +46,6 @@ ANCHOR_FEATURES = [
     "$low/$close",
     "$vwap/$close",
     "Ref($close, 1)/$close",
-    "Ref($volume, 1)/($volume+1e-12)",
 ]
 
 
@@ -108,22 +109,55 @@ def _resolve_device(config: dict) -> dict:
 
 
 def _validate_seed(config: dict) -> None:
+    apply_prediction_mode(config)
     task = config.get("task", {})
+    preset = prediction_mode_preset(config)
     name = task.get("name", "")
     if not TASK_NAME_PATTERN.fullmatch(name):
         raise ContractError("TASK_NAME_INVALID")
+    if not isinstance(task.get("run_id"), str) or not re.fullmatch(r"\d{4}", task["run_id"]):
+        raise ContractError("TASK_RUN_ID_MUST_BE_FOUR_DIGIT_YEAR")
     if config.get("pipeline_contract") != "qlib_ts_lstm_v1":
         raise ContractError("PIPELINE_CONTRACT_INVALID")
     if task.get("provider_uri") != "./data/cn_data":
         raise ContractError("QLIB_PROVIDER_PATH_FROZEN")
-    if task.get("target") != RAW_LABEL_EXPRESSION:
-        raise ContractError("TARGET_LABEL_FROZEN")
+    if task.get("target") != preset["target"]:
+        raise ContractError("PREDICTION_MODE_TARGET_MISMATCH")
     if task.get("primary_metric") != "sharpe":
         raise ContractError("PRIMARY_METRIC_FROZEN")
     if type(task.get("trials")) is not int or not 0 <= task["trials"] <= 10:
         raise ContractError("ADAPTIVE_ROUND_BUDGET_INVALID")
-    dates = [pd.Timestamp(task[f"{split}_{edge}_time"]) for split in ("train", "valid", "test") for edge in ("start", "end")]
-    if not (dates[0] <= dates[1] < dates[2] <= dates[3] < dates[4] <= dates[5]):
+    ensemble = config.get("ensemble", {})
+    if ensemble.get("enabled") is not True:
+        raise ContractError("ENSEMBLE_MUST_BE_ENABLED")
+    if ensemble.get("seeds") != [0, 1, 2]:
+        raise ContractError("ENSEMBLE_SEEDS_MUST_BE_0_1_2")
+    if ensemble.get("method") != "cross_sectional_zscore_mean":
+        raise ContractError("ENSEMBLE_METHOD_INVALID")
+    if ensemble.get("checkpoint_selection") != "independent_train_valid_ic":
+        raise ContractError("ENSEMBLE_CHECKPOINT_SELECTION_INVALID")
+    windows = {
+        split: (
+            pd.Timestamp(task[f"{split}_start_time"]),
+            pd.Timestamp(task[f"{split}_end_time"]),
+        )
+        for split in ("train", "train_valid", "agent_valid", "test")
+    }
+    if any(start > end for start, end in windows.values()):
+        raise ContractError("DATA_SPLIT_START_AFTER_END")
+    train_start, train_end = windows["train"]
+    train_valid_start, train_valid_end = windows["train_valid"]
+    agent_valid_start, agent_valid_end = windows["agent_valid"]
+    test_start, test_end = windows["test"]
+    # The two validation windows may overlap or be identical.  This keeps the
+    # current setting reproducible while making their responsibilities explicit.
+    # Neither window may overlap training or the isolated researcher test.
+    if not (
+        train_start <= train_end < train_valid_start
+        and train_end < agent_valid_start
+        and train_valid_end < test_start <= test_end
+        and agent_valid_end < test_start
+    ):
         raise ContractError("DATA_SPLITS_OVERLAP_OR_UNORDERED")
     alpha = config.get("z_alpha", {})
     if alpha.get("feature_pool") != "Alpha158" or alpha.get("selected_features") != ANCHOR_FEATURES:
@@ -134,17 +168,24 @@ def _validate_seed(config: dict) -> None:
     if model.get("sequence_mode") != "sampler" or model.get("sequence_window") != 20:
         raise ContractError("SEQUENCE_CONTRACT_INVALID")
     base = model.get("base_params", {})
-    expected_base = {"loss": "mse", "optimizer": "adam", "batch_size": 2048, "n_jobs": 0, "label_norm": True}
+    expected_base = {"loss": "mse", "optimizer": "adam", "batch_size": 2048, "n_jobs": 8, "label_norm": True}
     for key, expected in expected_base.items():
         if base.get(key) != expected:
             raise ContractError(f"MODEL_BASE_FIELD_FROZEN: {key}")
-    if base.get("metric", "ic") not in {"ic", "icir", "rank_ic", "rank_icir"}:
-        raise ContractError("CHECKPOINT_METRIC_INVALID")
+    if base.get("metric", "ic") != "ic":
+        raise ContractError("CHECKPOINT_METRIC_MUST_BE_TRAIN_VALID_IC")
     portfolio = config.get("z_portfolio", {})
     expected_portfolio = {
-        "ret_path": "./data/portfolio/c_2_c_1D.csv",
-        "limit_up_mask_path": "./data/portfolio/mask_limit_up_1D.csv",
-        "limit_down_mask_path": "./data/portfolio/mask_limit_down_1D.csv",
+        "ret_path": preset["ret_path"],
+        "limit_up_mask_path": preset["limit_up_mask_path"],
+        "limit_down_mask_path": preset["limit_down_mask_path"],
+        "execution_price": preset["execution_price"],
+        "return_definition": preset["return_definition"],
+        "buy_commission": 0.0001,
+        "sell_commission": 0.0001,
+        "sell_tax": 0.0005,
+        "buy_slippage": preset["buy_slippage"],
+        "sell_slippage": preset["sell_slippage"],
         "full_position": True,
         "long_only": True,
         "trade_delay_days": 1,
@@ -162,7 +203,9 @@ def _validate_seed(config: dict) -> None:
             raise ContractError(f"PORTFOLIO_FIELD_FROZEN_OR_BASELINE_INVALID: {key}")
     buy_cost = float(portfolio["buy_commission"]) + float(portfolio["buy_slippage"])
     sell_cost = float(portfolio["sell_commission"]) + float(portfolio["sell_tax"]) + float(portfolio["sell_slippage"])
-    if abs(buy_cost - 0.0006) > 1e-15 or abs(sell_cost - 0.0011) > 1e-15:
+    expected_buy_cost = 0.0001 + float(preset["buy_slippage"])
+    expected_sell_cost = 0.0001 + 0.0005 + float(preset["sell_slippage"])
+    if abs(buy_cost - expected_buy_cost) > 1e-15 or abs(sell_cost - expected_sell_cost) > 1e-15:
         raise ContractError("PORTFOLIO_TRANSACTION_COSTS_FROZEN")
 
 
@@ -180,7 +223,8 @@ def _relevant_qlib_files(repo_root: Path, config: dict, instruments: dict[str, A
     for instrument in sorted(instruments):
         for field in ("open", "high", "low", "close", "vwap", "volume"):
             paths.append(provider / "features" / instrument.lower() / f"{field}.day.bin")
-    paths.append(provider / "features" / task["benchmark"].lower() / "close.day.bin")
+    price_field = prediction_mode_preset(config)["price_field"]
+    paths.append(provider / "features" / task["benchmark"].lower() / f"{price_field}.day.bin")
     missing = [path for path in paths if not path.is_file()]
     if missing:
         raise DataCoverageError(f"QLIB_RELEVANT_INPUT_MISSING: {missing[:3]}")
@@ -195,11 +239,15 @@ def _validate_data_coverage(repo_root: Path, config: dict, calendar: list[pd.Tim
     returns = read_panel(returns_path)
     up = read_panel(up_path)
     down = read_panel(down_path)
-    mapped = [instrument_to_panel_code(instrument) for instrument in instruments]
-    missing_assets = sorted(set(mapped) - set(returns.columns))
-    if missing_assets:
-        raise DataCoverageError(f"QLIB_ASSET_NOT_IN_RETURN_PANEL: {missing_assets[:5]}")
-    for split in ("valid", "test"):
+    mapped = {instrument_to_panel_code(instrument) for instrument in instruments}
+    # Historical index membership may contain securities that were subsequently
+    # delisted or renamed and therefore do not exist in the portfolio panels.
+    # Portfolio execution is defined on the daily intersection of agent-valid alpha
+    # and portfolio data, so partial membership mismatch is legal.  Still catch
+    # code-format mistakes or a completely unrelated panel before execution.
+    if not mapped.intersection(returns.columns):
+        raise DataCoverageError("QLIB_RETURN_PANEL_NO_ASSET_OVERLAP")
+    for split in ("agent_valid", "test"):
         window = split_window(config, split, researcher=True)
         signal_dates = purged_signal_dates(calendar, window)
         alignment = aligned_trade_return_dates(calendar, signal_dates)
@@ -263,12 +311,136 @@ def load_submit(repo_root: Path, submit_path: Path) -> tuple[dict, str, str]:
     return load_json(resolved), relative, sha256_file(resolved)
 
 
+RUN_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _run_component(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not RUN_COMPONENT_PATTERN.fullmatch(value):
+        raise ContractError(f"RUN_PATH_COMPONENT_INVALID: {field}")
+    return value
+
+
+def _agent_name(repo_root: Path, config: dict) -> str:
+    explicit = config["agent"].get("name")
+    if explicit:
+        return _run_component(explicit, "agent.name")
+    model = config["agent"]["model"]
+    catalog_path = repo_root.resolve() / "configs" / "agent_models.json"
+    if catalog_path.is_file():
+        provider = load_json(catalog_path).get("models", {}).get(model, {}).get("provider")
+        if provider:
+            return _run_component(provider, "agent.provider")
+    return _run_component(model, "agent.model")
+
+
+def resolve_run_layout(repo_root: Path, seed: dict, submit_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    """Return the shared RASS namespace and immutable per-submission run root.
+
+    The login controller freezes ``DIAGAGENT_RUN_TIMESTAMP`` once and Slurm
+    workers inherit it. ``task.run_id``, when present, is a stable study/year
+    directory above that timestamp, never a replacement for it. Direct
+    non-controller use falls back to the submit-file modification minute. A
+    same-minute collision is detected by the existing submit hash/provenance
+    checks instead of silently mixing trajectories.
+    """
+    instruments = _run_component(seed["task"]["instruments"], "task.instruments")
+    agent_name = _agent_name(repo_root, seed)
+    mode = prediction_mode(seed)
+    model_name = _run_component(seed["z_model"]["model_name"], "z_model.model_name")
+    explicit_run_id = seed["task"].get("run_id")
+    study_id = _run_component(explicit_run_id, "task.run_id") if explicit_run_id is not None else None
+    run_timestamp = os.environ.get("DIAGAGENT_RUN_TIMESTAMP")
+    if run_timestamp is None:
+        run_timestamp = datetime.fromtimestamp(submit_path.resolve().stat().st_mtime).astimezone().strftime("%m%d%H%M")
+    if not re.fullmatch(r"\d{8}", run_timestamp):
+        raise ContractError("RUN_TIMESTAMP_INVALID")
+    namespace = repo_root.resolve() / "runs" / f"{instruments}_{agent_name}_{mode}"
+    run_root = namespace
+    if study_id is not None:
+        run_root = run_root / study_id
+    run_root = run_root / model_name / run_timestamp
+    return namespace, run_root, {
+        "instruments": instruments,
+        "agent_name": agent_name,
+        "prediction_mode": mode,
+        "model_name": model_name,
+        "run_id": study_id or run_timestamp,
+        "run_id_source": "task.run_id" if study_id is not None else "controller_or_submit_timestamp",
+        "study_id": study_id,
+        "run_timestamp": run_timestamp,
+    }
+
+
+def rass_evidence_path(repo_root: Path, config: dict) -> Path:
+    instruments = _run_component(config["task"]["instruments"], "task.instruments")
+    agent_name = _agent_name(repo_root, config)
+    mode = prediction_mode(config)
+    run_id = _run_component(config["task"].get("run_id"), "task.run_id")
+    return repo_root.resolve() / "runs" / f"{instruments}_{agent_name}_{mode}" / run_id / "rass_train_evidence.json"
+
+
+def _validated_cached_rass_evidence(
+    repo_root: Path,
+    config: dict,
+    evidence: dict,
+    catalog_hash: str,
+) -> dict:
+    if (
+        evidence.get("method") != "deterministic_rass_development_factor_evidence_v5"
+        or evidence.get("data_split") != "rass_development"
+        or evidence.get("contains_test_derived_data") is not False
+    ):
+        raise ContractError("RASS_EVIDENCE_CACHE_CONTRACT_INVALID")
+    expected_context = rass_evidence_context(config, catalog_hash)
+    context = evidence.get("evidence_context")
+    if context != expected_context:
+        raise ContractError("RASS_EVIDENCE_CACHE_CONTEXT_MISMATCH")
+    expected_context_hash = sha256_bytes(canonical_json_bytes(expected_context))
+    if evidence.get("rass_evidence_context_hash") != expected_context_hash:
+        raise ContractError("RASS_EVIDENCE_CACHE_CONTEXT_HASH_MISMATCH")
+    periods = expected_context["evidence_periods"]
+    expected = {
+        "prediction_mode": expected_context["prediction_mode"],
+        "target_label": expected_context["target_label"],
+        "label_hash": expected_context["label_hash"],
+        "initial_features": ANCHOR_FEATURES,
+        "catalog_hash": catalog_hash,
+        "input_data_hash": expected_context["input_data_hash"],
+        "evidence_code_hash": expected_context["evidence_code_hash"],
+        "configured_training_period": expected_context["configured_training_period"],
+        "evidence_period": [periods[0]["start_time"], periods[-1]["signal_end_time"]],
+    }
+    for key, value in expected.items():
+        if evidence.get(key) != value:
+            raise ContractError(f"RASS_EVIDENCE_CACHE_IDENTITY_MISMATCH: {key}")
+    rolling = evidence.get("rolling_evidence_protocol")
+    if not isinstance(rolling, dict) or rolling.get("periods") != periods or rolling.get("test_used") is not False:
+        raise ContractError("RASS_EVIDENCE_CACHE_PERIOD_MISMATCH")
+    records = evidence.get("records")
+    if not isinstance(records, list) or evidence.get("candidate_count") != len(records):
+        raise ContractError("RASS_EVIDENCE_CACHE_RECORDS_INVALID")
+    stored_hash = evidence.get("evidence_hash")
+    unhashed = copy.deepcopy(evidence)
+    unhashed.pop("evidence_hash", None)
+    if not isinstance(stored_hash, str) or stored_hash != sha256_bytes(canonical_json_bytes(unhashed)):
+        raise ContractError("RASS_EVIDENCE_CACHE_HASH_MISMATCH")
+    return evidence
+
+
+def _set_round0_alpha_baseline(config: dict) -> None:
+    """Enforce the five submitted anchors independently of shared RASS cache state."""
+    if config["z_alpha"].get("selected_features") != ANCHOR_FEATURES:
+        raise ContractError("ROUND0_ANCHOR_FEATURES_INVALID")
+    config["z_alpha"]["alpha_frozen"] = False
+    config["z_model"]["derived"] = {"d_feat": len(ANCHOR_FEATURES)}
+
+
 def materialize_initial_config(repo_root: Path, submit_path: Path) -> tuple[dict, Path]:
     repo_root = repo_root.resolve()
     seed, relative_submit, submit_hash = load_submit(repo_root, submit_path)
     _validate_seed(seed)
     _load_agent_catalog(repo_root, seed)
-    run_root = repo_root / "runs" / seed["task"]["name"]
+    namespace, run_root, run_layout = resolve_run_layout(repo_root, seed, submit_path)
     initial_path = run_root / "configs" / "initial.json"
     provenance_path = run_root / "configs" / "initial.provenance.json"
     if initial_path.exists():
@@ -283,8 +455,8 @@ def materialize_initial_config(repo_root: Path, submit_path: Path) -> tuple[dict
     config = copy.deepcopy(seed)
     config["source_submit"] = {"path": relative_submit, "sha256": submit_hash}
     config["runtime"] = _resolve_device(config)
-    config["z_alpha"]["alpha_frozen"] = False
-    config["z_model"]["derived"] = {"d_feat": len(config["z_alpha"]["selected_features"])}
+    config["runtime"]["run_layout"] = run_layout
+    _set_round0_alpha_baseline(config)
     config["pipeline_runtime"] = {
         "dataset": "TSDatasetH",
         "handler": "DataHandlerLP",
@@ -323,9 +495,11 @@ def materialize_initial_config(repo_root: Path, submit_path: Path) -> tuple[dict
             "seed_source": relative_submit,
             "derived_fields": {
                 "runtime": "frozen startup CUDA resolution",
-                "z_alpha.alpha_frozen": "mandatory RASS state machine baseline",
+                "z_alpha.alpha_frozen": "false for the mandatory five-factor Round-0 baseline",
                 "z_model.derived.d_feat": "len(z_alpha.selected_features)",
                 "pipeline_runtime": "qlib_ts_lstm_v1 frozen contract",
+                "ensemble": "three independent seeds; per-seed train-valid IC checkpoints; cross-sectional z-score mean",
+                "task.prediction_mode_and_bound_execution_fields": "c2c/o2o mode preset",
                 "task.runtime_handler_start_time": "20-trading-day sequence warmup",
             },
         },
@@ -336,13 +510,38 @@ def materialize_initial_config(repo_root: Path, submit_path: Path) -> tuple[dict
     catalog_payload = {"pool": "Alpha158", "entries": catalog, "contains_test_derived_data": False}
     catalog_hash = sha256_bytes(canonical_json_bytes(catalog_payload))
     catalog_payload["catalog_hash"] = catalog_hash
-    evidence = build_rass_train_evidence(repo_root, config, catalog, catalog_hash)
+    shared_evidence_path = rass_evidence_path(repo_root, config)
+    evidence_cache_status = "created"
+    if shared_evidence_path.is_file():
+        try:
+            evidence = _validated_cached_rass_evidence(
+                repo_root,
+                config,
+                load_json(shared_evidence_path),
+                catalog_hash,
+            )
+            evidence_cache_status = "reused"
+        except (ContractError, json.JSONDecodeError):
+            evidence = build_rass_train_evidence(repo_root, config, catalog, catalog_hash)
+            atomic_write_json(shared_evidence_path, evidence)
+            evidence_cache_status = "regenerated"
+    else:
+        evidence = build_rass_train_evidence(repo_root, config, catalog, catalog_hash)
+        atomic_write_json(shared_evidence_path, evidence)
+    config["provenance"]["shared_rass_evidence"] = {
+        "path": shared_evidence_path.relative_to(repo_root).as_posix(),
+        "sha256": sha256_file(shared_evidence_path),
+        "status": evidence_cache_status,
+        "selection_cached": False,
+    }
     config["provenance"]["feature_catalog"] = {"path": "configs/frozen_feature_catalog.json", "sha256": sha256_bytes(canonical_json_bytes(catalog_payload))}
-    config["provenance"]["rass_train_evidence"] = {"path": "configs/rass_train_evidence.json", "sha256": sha256_bytes(canonical_json_bytes(evidence))}
+    if evidence is not None:
+        config["provenance"]["rass_train_evidence"] = {"path": "configs/rass_train_evidence.json", "sha256": sha256_bytes(canonical_json_bytes(evidence))}
     configs_dir = run_root / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(configs_dir / "frozen_feature_catalog.json", catalog_payload)
-    atomic_write_json(configs_dir / "rass_train_evidence.json", evidence)
+    if evidence is not None:
+        atomic_write_json(configs_dir / "rass_train_evidence.json", evidence)
     write_json_exclusive(initial_path, config)
     initial_hash = sha256_file(initial_path)
     write_json_exclusive(provenance_path, {

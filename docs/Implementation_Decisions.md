@@ -165,3 +165,27 @@ experimental-contract amendment.
   That would leave a state-mutating path around the frozen stop rule.
 - Impact: No active trajectory decision changes. Repeated or out-of-order CLI
   invocations are deterministic and non-mutating.
+
+## ID-013: RASS fixed 2021-2024 annual development evidence
+
+- Decision: RASS receives deterministic single-factor evidence separately for
+  2021, 2022, 2023, and 2024. It also receives the same annual view for shortlist
+  anchor-residual diagnostics. Aggregate metrics
+  remain descriptive, and no fixed weighted score or metric Top-K selects factors.
+- Rationale: This exposes temporal stability and adverse-year behavior. The user
+  explicitly chose to include 2024 so the candidate set has four annual evidence
+  points.
+- Consequence: 2024 is RASS development data and cannot be reported as unseen
+  validation evidence for factor selection. Test isolation remains unchanged.
+- Impact: New trajectories regenerate and hash RASS evidence as version 3.
+  Existing completed run artifacts remain historical and are not rewritten.
+
+## ID-014: Fixed Sharpe epsilon inside the original composite Gate
+
+- Decision: Preserve the original ordered Sharpe/mechanism/trade-off Gate, but
+  replace the adaptive Bootstrap Sharpe epsilon with the fixed value `0.200`.
+  Equality belongs to the unchanged band.
+- Consequence: Mechanism and guardrail states continue to affect verdicts. A
+  Sharpe improvement above `0.200` can be rejected for an opposite mechanism or
+  material trade-off; a delta inside `[-0.200, 0.200]` can still be
+  `PARTIALLY_SUPPORTED` when mechanism evidence is `MATCH` or `PARTIAL`.

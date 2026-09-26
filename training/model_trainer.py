@@ -7,13 +7,13 @@ import random
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable
 
 import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset
 
 from backbone import ALSTMModel, GRUModel, LSTMModel
 from core.errors import ContractError
@@ -45,7 +45,7 @@ def persisted_epoch_record(record: dict) -> dict:
         **record,
         "training_loss": persisted_metric(record.get("training_loss")),
         "train": persisted_metric_summary(record.get("train", {})),
-        "valid": persisted_metric_summary(record.get("valid", {})),
+        "train_valid": persisted_metric_summary(record.get("train_valid", {})),
     }
 
 
@@ -64,23 +64,13 @@ class SamplerDataset(Dataset):
         return torch.from_numpy(features), torch.tensor(target, dtype=torch.float32), index
 
 
-class FixedOrderSampler(Sampler[int]):
-    def __init__(self, order: np.ndarray):
-        self.order = [int(item) for item in order]
-
-    def __iter__(self) -> Iterator[int]:
-        return iter(self.order)
-
-    def __len__(self) -> int:
-        return len(self.order)
-
-
 @dataclass(frozen=True)
 class TrainingOutcome:
     selected_checkpoint: Path
     selected_epoch: int
     selected_score: float | None
     history: list[dict]
+    seed: int
 
 
 def select_checkpoint_epoch(history: list[dict], metric: str | None = None) -> tuple[int, float | None]:
@@ -92,7 +82,7 @@ def select_checkpoint_epoch(history: list[dict], metric: str | None = None) -> t
     best_epoch = int(history[0]["epoch"])
     best_score = -math.inf
     for record in history:
-        value = record["valid"].get(metric)
+        value = record["train_valid"].get(metric)
         score = float(value) if value is not None and np.isfinite(value) else -math.inf
         if score > best_score:
             best_epoch = int(record["epoch"])
@@ -101,7 +91,7 @@ def select_checkpoint_epoch(history: list[dict], metric: str | None = None) -> t
 
 
 def checkpoint_score(value: object) -> float:
-    """Normalize a configured validation metric for strict best-checkpoint selection."""
+    """Normalize a configured train-validation metric for checkpoint selection."""
     if value is None:
         return -math.inf
     try:
@@ -112,17 +102,18 @@ def checkpoint_score(value: object) -> float:
 
 
 def is_checkpoint_improvement(value: object, best_score: float) -> bool:
-    """Return True only for a finite validation score strictly above the incumbent."""
+    """Return True only for a finite train-validation score above the incumbent."""
     return checkpoint_score(value) > best_score
 
 
-def _checkpoint_payload(model: nn.Module, config: dict, epoch: int, feature_count: int) -> dict:
+def _checkpoint_payload(model: nn.Module, config: dict, epoch: int, feature_count: int, seed: int) -> dict:
     return {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "model_name": config["z_model"]["model_name"],
         "d_feat": feature_count,
         "config_hash": config["provenance"]["effective_config_hash"],
+        "seed": int(seed),
     }
 
 
@@ -198,6 +189,12 @@ def _worker_seed(worker_id: int) -> None:
     random.seed(seed)
 
 
+def epoch_shuffle_seed(seed: int, epoch: int) -> int:
+    """Backward-compatible metadata helper; training now uses Qlib-style shuffle."""
+    del epoch
+    return int(seed)
+
+
 def make_eval_loader(dataset: Dataset, config: dict) -> DataLoader:
     base = config["z_model"]["base_params"]
     return DataLoader(
@@ -244,12 +241,15 @@ def train_model(
     config: dict,
     train_sampler,
     train_raw_label: pd.Series,
-    valid_sampler,
-    valid_raw_label: pd.Series,
+    train_valid_sampler,
+    train_valid_raw_label: pd.Series,
     experiment_dir: Path,
     researcher_dispatch: ResearcherDispatch,
+    *,
+    seed: int | None = None,
+    artifact_namespace: str | None = None,
 ) -> TrainingOutcome:
-    seed = int(config["task"]["seed"])
+    seed = int(config["task"]["seed"] if seed is None else seed)
     seed_everything(seed)
     device = torch.device(config["runtime"]["resolved_device"])
     model = build_model(config).to(device)
@@ -268,9 +268,10 @@ def train_model(
     loss_function = nn.MSELoss()
     feature_count = len(config["z_alpha"]["selected_features"])
     train_dataset = SamplerDataset(train_sampler, feature_count)
-    valid_dataset = SamplerDataset(valid_sampler, feature_count)
     artifact_dir = experiment_dir / "artifacts"
     checkpoint_dir = artifact_dir / "checkpoints"
+    if artifact_namespace is not None:
+        checkpoint_dir = checkpoint_dir / artifact_namespace
     log_dir = experiment_dir / "logs"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -278,13 +279,17 @@ def train_model(
         stale_checkpoint.unlink()
     index_payload = {
         "train": [[pd.Timestamp(date).strftime("%Y-%m-%d"), str(instrument)] for date, instrument in train_sampler.get_index()],
-        "valid": [[pd.Timestamp(date).strftime("%Y-%m-%d"), str(instrument)] for date, instrument in valid_sampler.get_index()],
+        "train_valid": [
+            [pd.Timestamp(date).strftime("%Y-%m-%d"), str(instrument)]
+            for date, instrument in train_valid_sampler.get_index()
+        ],
         "loader_contract": {
             "training": {"shuffle": True, "drop_last": True, "batch_size": int(base["batch_size"]), "n_jobs": int(base["n_jobs"])},
             "evaluation": {"shuffle": False, "drop_last": False, "batch_size": int(base["batch_size"]), "n_jobs": int(base["n_jobs"])},
         },
     }
-    atomic_write_json(artifact_dir / "split_indices.json", index_payload)
+    split_name = "split_indices.json" if artifact_namespace is None else f"split_indices_{artifact_namespace}.json"
+    atomic_write_json(artifact_dir / split_name, index_payload)
 
     history: list[dict] = []
     best_score = -math.inf
@@ -292,21 +297,20 @@ def train_model(
     best_checkpoint = checkpoint_dir / "best.pt"
     has_best_checkpoint = False
     no_improvement = 0
-    metrics_log = log_dir / "training_metrics.jsonl"
+    metrics_name = "training_metrics.jsonl" if artifact_namespace is None else f"training_metrics_{artifact_namespace}.jsonl"
+    metrics_log = log_dir / metrics_name
+    for legacy_order in log_dir.glob("train_sample_order_epoch_*.npy"):
+        legacy_order.unlink()
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=int(base["batch_size"]),
+        shuffle=True,
+        drop_last=True,
+        num_workers=int(base["n_jobs"]),
+        worker_init_fn=_worker_seed,
+    )
     with metrics_log.open("w", encoding="utf-8", newline="\n") as log_handle:
         for epoch in range(int(base["n_epochs"])):
-            order_generator = torch.Generator()
-            order_generator.manual_seed(seed + epoch)
-            order = torch.randperm(len(train_dataset), generator=order_generator).numpy()
-            np.save(log_dir / f"train_sample_order_epoch_{epoch:03d}.npy", order, allow_pickle=False)
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=int(base["batch_size"]),
-                sampler=FixedOrderSampler(order),
-                drop_last=True,
-                num_workers=int(base["n_jobs"]),
-                worker_init_fn=_worker_seed,
-            )
             model.train()
             losses: list[float] = []
             for features, target, _ in train_loader:
@@ -316,26 +320,41 @@ def train_model(
                 prediction = model(features).reshape(-1)
                 loss = loss_function(prediction, target)
                 loss.backward()
+                torch.nn.utils.clip_grad_value_(model.parameters(), 3.0)
                 optimizer.step()
                 losses.append(float(loss.detach().cpu()))
             if not losses:
                 raise ContractError("TRAINING_DROP_LAST_REMOVED_ALL_BATCHES")
             _, train_metrics = evaluate_model(model, train_sampler, train_raw_label, feature_count, config, device)
-            _, valid_metrics = evaluate_model(model, valid_sampler, valid_raw_label, feature_count, config, device)
+            _, train_valid_metrics = evaluate_model(
+                model,
+                train_valid_sampler,
+                train_valid_raw_label,
+                feature_count,
+                config,
+                device,
+            )
             record = {
                 "epoch": epoch,
+                "shuffle_seed": seed,
+                "shuffle_algorithm": "torch.utils.data.RandomSampler",
+                "shuffle_policy": "reshuffle_each_epoch",
+                "shuffle_sample_count": len(train_dataset),
                 "training_loss": float(np.mean(losses)),
                 "train": train_metrics.summary,
-                "valid": valid_metrics.summary,
-                "excluded_dates": {"train": train_metrics.excluded, "valid": valid_metrics.excluded},
+                "train_valid": train_valid_metrics.summary,
+                "excluded_dates": {
+                    "train": train_metrics.excluded,
+                    "train_valid": train_valid_metrics.excluded,
+                },
             }
             history.append(record)
             log_handle.write(json.dumps(persisted_epoch_record(record), ensure_ascii=False, separators=(",", ":")) + "\n")
             log_handle.flush()
-            score_value = valid_metrics.summary.get(metric_name)
+            score_value = train_valid_metrics.summary.get(metric_name)
             score = checkpoint_score(score_value)
             improved = is_checkpoint_improvement(score_value, best_score)
-            payload = _checkpoint_payload(model, config, epoch, feature_count)
+            payload = _checkpoint_payload(model, config, epoch, feature_count, seed)
             if improved:
                 _atomic_torch_save(payload, best_checkpoint)
                 best_score = score
@@ -346,7 +365,12 @@ def train_model(
                 no_improvement += 1
             dispatch_checkpoint = best_checkpoint if improved else _transient_checkpoint(payload, epoch)
             try:
-                researcher_dispatch(epoch, dispatch_checkpoint, train_metrics.summary, valid_metrics.summary)
+                researcher_dispatch(
+                    epoch,
+                    dispatch_checkpoint,
+                    train_metrics.summary,
+                    train_valid_metrics.summary,
+                )
             finally:
                 if not improved:
                     dispatch_checkpoint.unlink(missing_ok=True)
@@ -354,20 +378,38 @@ def train_model(
                 break
         selected_epoch, selected_score = select_checkpoint_epoch(history, metric_name)
         if not has_best_checkpoint or selected_score is None or not best_checkpoint.is_file():
-            raise ContractError("NO_FINITE_VALIDATION_METRIC_FOR_CHECKPOINT")
+            raise ContractError("NO_FINITE_TRAIN_VALID_METRIC_FOR_CHECKPOINT")
         if selected_epoch != best_epoch or not math.isclose(selected_score, best_score, rel_tol=0.0, abs_tol=0.0):
             raise ContractError("INCREMENTAL_CHECKPOINT_SELECTION_MISMATCH")
         selection = {
             "event": "checkpoint_selected",
-            "metric": f"valid.{metric_name}",
+            "metric": f"train_valid.{metric_name}",
             "mode": "max",
             "epoch": best_epoch,
             "score": None if best_score == -math.inf else best_score,
         }
         persisted_selection = {**selection, "score": persisted_metric(selection["score"])}
         log_handle.write(json.dumps(persisted_selection, ensure_ascii=False, separators=(",", ":")) + "\n")
-    atomic_write_json(artifact_dir / "selected_checkpoint.json", {**persisted_selection, "path": best_checkpoint.relative_to(experiment_dir).as_posix()})
-    return TrainingOutcome(best_checkpoint, best_epoch, None if best_score == -math.inf else best_score, history)
+    selected_name = (
+        "selected_checkpoint.json"
+        if artifact_namespace is None
+        else f"selected_checkpoint_{artifact_namespace}.json"
+    )
+    atomic_write_json(
+        artifact_dir / selected_name,
+        {
+            **persisted_selection,
+            "seed": seed,
+            "path": best_checkpoint.relative_to(experiment_dir).as_posix(),
+        },
+    )
+    return TrainingOutcome(
+        best_checkpoint,
+        best_epoch,
+        None if best_score == -math.inf else best_score,
+        history,
+        seed,
+    )
 
 
 def load_model_from_checkpoint(config: dict, checkpoint: Path) -> nn.Module:

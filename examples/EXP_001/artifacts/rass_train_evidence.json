@@ -16,7 +16,7 @@
     "data_hash": "example-not-a-formal-hash",
     "catalog_hash": "example-not-a-formal-hash",
     "label_hash": "example-not-a-formal-hash",
-    "config_hash": "example-not-a-formal-hash",
+    "evidence_context_hash": "example-not-a-formal-hash",
     "evidence_code_hash": "example-not-a-formal-hash"
   },
   "contains_validation_or_test_data": false

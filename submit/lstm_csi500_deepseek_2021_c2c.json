@@ -1,15 +1,19 @@
 {
   "task": {
     "name": "lstm_csi500_deepseek",
+    "run_id": "2021",
     "market": "cn",
     "benchmark": "SH000905",
     "instruments": "csi500",
+    "prediction_mode" : "c2c",
     "target": "Ref($close, -2) / Ref($close, -1) - 1",
-    "train_start_time": "2020-01-01",
-    "train_end_time": "2023-12-31",
-    "valid_start_time": "2024-01-01",
-    "valid_end_time": "2024-12-31",
-    "test_start_time": "2025-01-01",
+    "train_start_time": "2015-01-01",
+    "train_end_time": "2019-12-31",
+    "train_valid_start_time": "2020-01-01",
+    "train_valid_end_time": "2021-06-30",
+    "agent_valid_start_time": "2021-07-01",
+    "agent_valid_end_time": "2023-06-30",
+    "test_start_time": "2024-07-01",
     "test_end_time": "2026-06-30",
     "primary_metric": "sharpe",
     "provider_uri": "./data/cn_data",
@@ -18,10 +22,17 @@
     "GPU": 0
   },
   "agent": {
-    "model": "deepseek-v4-flash",
+    "name":"deepseek",
+    "model": "deepseek-v4-pro",
     "reasoning_effort": "medium"
   },
   "pipeline_contract": "qlib_ts_lstm_v1",
+  "ensemble": {
+    "enabled": true,
+    "seeds": [0, 1, 2],
+    "method": "cross_sectional_zscore_mean",
+    "checkpoint_selection": "independent_train_valid_ic"
+  },
   "z_alpha": {
     "feature_pool": "Alpha158",
     "selected_features": [
@@ -29,8 +40,7 @@
       "$high/$close",
       "$low/$close",
       "$vwap/$close",
-      "Ref($close, 1)/$close",
-      "Ref($volume, 1)/($volume+1e-12)"
+      "Ref($close, 1)/$close"
     ]
   },
   "z_model": {
@@ -39,17 +49,17 @@
     "sequence_window": 20,
     "base_params": {
       "n_epochs": 100,
-      "early_stop": 5,
+      "early_stop": 10,
       "loss": "mse",
       "metric": "ic",
       "optimizer": "adam",
       "batch_size": 2048,
-      "n_jobs": 0,
+      "n_jobs": 8,
       "label_norm": true
     },
     "train_params": {
       "lr": 0.001,
-      "hidden_size": 64,
+      "hidden_size": 32,
       "dropout": 0.0,
       "weight_decay": 0.0
     },

@@ -7,8 +7,7 @@
       "enum": [
         "RASS",
         "FAMA",
-        "RAPA",
-        "NO_INTERVENTION"
+        "RAPA"
       ]
     },
     "selected_layer": {
@@ -16,8 +15,7 @@
       "enum": [
         "alpha",
         "model",
-        "portfolio",
-        "none"
+        "portfolio"
       ]
     },
     "failure_summary": {
@@ -36,12 +34,38 @@
       }
     },
     "intervention_goal": {
-      "type": ["string", "null"]
+      "type": "string",
+      "minLength": 1
     },
     "confidence": {
       "type": "number",
-      "minimum": 0,
+      "minimum": 0.5,
       "maximum": 1
+    },
+    "primary_objective_assessment": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "const": "validation_sharpe_ratio"
+        },
+        "observed_value": {
+          "type": "number"
+        },
+        "failure_supported": {
+          "type": "boolean"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "metric",
+        "observed_value",
+        "failure_supported",
+        "rationale"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -55,32 +79,6 @@
   ],
   "additionalProperties": false,
   "allOf": [
-    {
-      "if": {
-        "properties": {
-          "selected_agent": {
-            "const": "NO_INTERVENTION"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "selected_layer": {
-            "const": "none"
-          },
-          "intervention_goal": {
-            "type": "null"
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "confidence": {
-            "minimum": 0.5
-          }
-        }
-      }
-    },
     {
       "if": {
         "properties": {
@@ -122,6 +120,9 @@
         }
       },
       "then": {
+        "required": [
+          "primary_objective_assessment"
+        ],
         "properties": {
           "selected_layer": {
             "const": "portfolio"

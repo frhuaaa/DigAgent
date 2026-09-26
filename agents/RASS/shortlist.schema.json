@@ -4,7 +4,7 @@
   "properties": {
     "agent": {"const": "RASS"},
     "stage": {"const": "train_shortlist"},
-    "data_split": {"const": "train"},
+    "data_split": {"const": "rass_development"},
     "shortlist_size": {"const": 12},
     "shortlist": {
       "type": "array",

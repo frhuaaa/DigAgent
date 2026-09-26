@@ -22,9 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def accepted_config() -> dict:
-    config = load_json(REPO_ROOT / "submit" / "lstm_csi500_deepseek.json")
+    config = load_json(REPO_ROOT / "submit" / "lstm_csi500_deepseek_2024_c2c.json")
     config["z_alpha"]["alpha_frozen"] = False
-    config["z_model"]["derived"] = {"d_feat": 6}
+    config["z_model"]["derived"] = {"d_feat": len(config["z_alpha"]["selected_features"])}
     config["provenance"] = {"effective_config_hash": "a"}
     return config
 
@@ -116,6 +116,17 @@ class ContractValidatorTests(unittest.TestCase):
         candidate = apply_validated_proposal(self.config, outcome, "FAMA")
         self.assertEqual(candidate["z_model"]["train_params"]["dropout"], 0.2)
 
+    def test_fama_group_local_short_path_is_canonicalized(self):
+        proposal = self._fama(diff=[{
+            "op": "replace", "path": "dropout",
+            "old_value": 0.0, "new_value": 0.2,
+        }])
+        outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_fama, proposal)
+        self.assertTrue(outcome.passed, outcome.reason_codes)
+        self.assertEqual(outcome.candidate_diff[0]["path"], "z_model.train_params.dropout")
+        candidate = apply_validated_proposal(self.config, outcome, "FAMA")
+        self.assertEqual(candidate["z_model"]["train_params"]["dropout"], 0.2)
+
     def test_fama_escaped_json_pointer_is_rejected(self):
         proposal = self._fama(diff=[{
             "op": "replace", "path": "/z_model/train_params/drop~1out",
@@ -149,13 +160,89 @@ class ContractValidatorTests(unittest.TestCase):
         outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_rapa, self._rapa(two))
         self.assertIn("SCHEMA_INVALID", outcome.reason_codes)
 
+    def test_turnover_penalty_requires_directional_probe_signature(self):
+        increase_penalty = [{"op": "replace", "path": "z_portfolio.turnover_penalty", "old_value": 1, "new_value": 1.1}]
+        outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_rapa, self._rapa(increase_penalty))
+        self.assertTrue(outcome.passed, outcome.reason_codes)
+        wrong = self._rapa(increase_penalty)
+        wrong["expected_signature"] = [{"metric": "one_way_turnover_mean", "direction": "increase"}]
+        outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_rapa, wrong)
+        self.assertIn("RAPA_TURNOVER_PENALTY_MECHANISM_DIRECTION_MISMATCH", outcome.reason_codes)
+
+        decrease_penalty = [{"op": "replace", "path": "z_portfolio.turnover_penalty", "old_value": 1, "new_value": 0.9}]
+        proposal = self._rapa(decrease_penalty)
+        proposal["expected_signature"] = [{"metric": "one_way_turnover_mean", "direction": "increase"}]
+        outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_rapa, proposal)
+        self.assertTrue(outcome.passed, outcome.reason_codes)
+
+    def test_rapa_rejects_alpha_scale_and_large_initial_probe(self):
+        alpha = [{"op": "replace", "path": "z_portfolio.alpha_scale", "old_value": 0.001, "new_value": 0.0011}]
+        outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_rapa, self._rapa(alpha))
+        self.assertFalse(outcome.passed)
+        self.assertIn("SCHEMA_INVALID", outcome.reason_codes)
+
+        large = [{"op": "replace", "path": "z_portfolio.risk_aversion", "old_value": 1.0, "new_value": 1.2}]
+        outcome = validate_proposal(REPO_ROOT, REPO_ROOT, self.config, "EXP_002", self.clem_rapa, self._rapa(large))
+        self.assertIn("RAPA_INITIAL_PROBE_TOO_LARGE", outcome.reason_codes)
+
+    def test_rapa_directional_expansion_reverse_and_four_attempt_cap(self):
+        def write_memory(root, records):
+            path = root / "memory" / "experiments.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+
+        def record(index, old, new, accepted=True):
+            return {
+                "experiment_id": f"EXP_{index:03d}", "round": index,
+                "layer": "portfolio", "group": "portfolio_objective",
+                "intervention": [{
+                    "op": "replace", "path": "z_portfolio.risk_aversion",
+                    "old_value": old, "new_value": new,
+                }],
+                "accepted": accepted,
+                "verdict": "SUPPORTED" if accepted else "FALSIFIED",
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_memory(root, [record(2, 1.0, 1.1)])
+            self.config["z_portfolio"]["risk_aversion"] = 1.1
+            expansion = [{"op": "replace", "path": "z_portfolio.risk_aversion", "old_value": 1.1, "new_value": 1.3}]
+            outcome = validate_proposal(REPO_ROOT, root, self.config, "EXP_003", self.clem_rapa, self._rapa(expansion))
+            self.assertTrue(outcome.passed, outcome.reason_codes)
+
+            shrink = [{"op": "replace", "path": "z_portfolio.risk_aversion", "old_value": 1.1, "new_value": 1.15}]
+            outcome = validate_proposal(REPO_ROOT, root, self.config, "EXP_003", self.clem_rapa, self._rapa(shrink))
+            self.assertIn("RAPA_EXPANSION_STEP_MUST_NOT_SHRINK", outcome.reason_codes)
+
+            reverse = [{"op": "replace", "path": "z_portfolio.risk_aversion", "old_value": 1.1, "new_value": 1.0}]
+            outcome = validate_proposal(REPO_ROOT, root, self.config, "EXP_003", self.clem_rapa, self._rapa(reverse))
+            self.assertIn("RAPA_ACCEPTED_DIRECTION_MUST_CONTINUE", outcome.reason_codes)
+
+            write_memory(root, [record(2, 1.0, 0.9, accepted=False)])
+            self.config["z_portfolio"]["risk_aversion"] = 1.0
+            opposite_probe = [{"op": "replace", "path": "z_portfolio.risk_aversion", "old_value": 1.0, "new_value": 1.1}]
+            outcome = validate_proposal(REPO_ROOT, root, self.config, "EXP_003", self.clem_rapa, self._rapa(opposite_probe))
+            self.assertTrue(outcome.passed, outcome.reason_codes)
+
+            write_memory(root, [
+                record(2, 1.0, 1.1), record(3, 1.1, 1.3),
+                record(4, 1.3, 1.5), record(5, 1.5, 2.0),
+            ])
+            self.config["z_portfolio"]["risk_aversion"] = 2.0
+            fifth = [{"op": "replace", "path": "z_portfolio.risk_aversion", "old_value": 2.0, "new_value": 1.9}]
+            outcome = validate_proposal(REPO_ROOT, root, self.config, "EXP_006", self.clem_rapa, self._rapa(fifth))
+            self.assertIn("RAPA_PARAMETER_ATTEMPT_CAP_EXCEEDED", outcome.reason_codes)
+
     def test_rass_exact_append_and_freeze_preconditions(self):
+        self.config["z_alpha"]["selected_features"] = self.config["z_alpha"]["selected_features"][:5]
+        self.config["z_model"]["derived"]["d_feat"] = 5
         with tempfile.TemporaryDirectory() as tmp:
             run_root = Path(tmp)
-            entries = [{"id": f"F{i}", "expression": f"Expr{i}", "category": "rolling", "eligible": True} for i in range(4)]
+            entries = [{"id": f"F{i}", "expression": f"Expr{i}", "category": "rolling", "eligible": True} for i in range(3)]
             evidence = {
                 "records": entries, "input_data_hash": "data", "catalog_hash": "cat",
-                "label_hash": "label", "effective_config_hash": "a", "evidence_code_hash": "code",
+                "label_hash": "label", "rass_evidence_context_hash": "ctx", "evidence_code_hash": "code",
                 "evidence_hash": "evidence",
             }
             atomic_write_json(run_root / "configs" / "frozen_feature_catalog.json", {"entries": entries})
@@ -170,17 +257,18 @@ class ContractValidatorTests(unittest.TestCase):
             shortlist_evidence["evidence_hash"] = shortlist_hash
             atomic_write_json(run_root / "experiments" / "EXP_001" / "logs" / "rass_shortlist_evidence.json", shortlist_evidence)
             proposal = {
-                "agent": "RASS", "method": "agent_factor_exploration", "data_split": "train",
-                "selected_group": "initial_feature_bootstrap", "target_subset_size": 10,
+                "agent": "RASS", "method": "agent_factor_exploration", "data_split": "rass_development",
+                "selected_group": "initial_feature_bootstrap", "target_subset_size": 8,
                 "initial_features": self.config["z_alpha"]["selected_features"],
+                "removed_features": [],
                 "added_features": [{"id": item["id"], "expression": item["expression"]} for item in entries],
                 "selected_features": self.config["z_alpha"]["selected_features"] + [item["expression"] for item in entries],
                 "hypothesis": "complementary breadth", "local_diagnosis": "narrow anchors",
                 "reasoning": "train evidence supports complementary signals", "alternatives_considered": ["other"],
                 "expected_signature": [{"metric": "ic", "direction": "stable_or_improve"}],
                 "falsification_condition": "mechanism materially opposite", "confidence": 0.8,
-                "alpha_frozen_after_success": True, "evidence_refs": ["configs/rass_train_evidence.json", "logs/rass_shortlist_evidence.json", f"evidence_hash: {shortlist_hash}"],
-                "provenance": {"data_hash": "data", "catalog_hash": "cat", "label_hash": "label", "config_hash": "a", "evidence_code_hash": "code", "shortlist_evidence_hash": shortlist_hash},
+                "evidence_frozen_after_success": True, "evidence_refs": ["configs/rass_train_evidence.json", "logs/rass_shortlist_evidence.json", f"evidence_hash: {shortlist_hash}"],
+                "provenance": {"data_hash": "data", "catalog_hash": "cat", "label_hash": "label", "evidence_context_hash": "ctx", "evidence_code_hash": "code", "shortlist_evidence_hash": shortlist_hash},
             }
             clem = {"selected_agent": "RASS", "selected_layer": "alpha", "confidence": 1.0}
             outcome = validate_proposal(REPO_ROOT, run_root, self.config, "EXP_001", clem, proposal)
@@ -188,9 +276,64 @@ class ContractValidatorTests(unittest.TestCase):
             proposal["evidence_refs"].append("evidence_hash: evidence")
             outcome = validate_proposal(REPO_ROOT, run_root, self.config, "EXP_001", clem, proposal)
             self.assertTrue(outcome.passed, outcome.reason_codes)
-            proposal["selected_features"] = proposal["selected_features"][1:]
-            outcome = validate_proposal(REPO_ROOT, run_root, self.config, "EXP_001", clem, proposal)
-            self.assertIn("SCHEMA_INVALID", outcome.reason_codes)
+
+            rejected_memory = {
+                "experiment_id": "EXP_001", "round": 1, "parent": "EXP_000",
+                "layer": "alpha", "group": "initial_feature_bootstrap",
+                "intervention": {"removed_features": [], "added_features": copy.deepcopy(proposal["added_features"])},
+                "accepted": False, "verdict": "FALSIFIED",
+            }
+            memory_path = run_root / "memory" / "experiments.jsonl"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+            memory_path.write_text(json.dumps(rejected_memory) + "\n", encoding="utf-8")
+            atomic_write_json(run_root / "experiments" / "EXP_002" / "logs" / "rass_shortlist_evidence.json", shortlist_evidence)
+            repeated = validate_proposal(REPO_ROOT, run_root, self.config, "EXP_002", clem, proposal)
+            self.assertIn("RASS_REPEATED_THREE_FACTOR_SET", repeated.reason_codes)
+            memory_path.unlink()
+
+    def test_rass_later_refinement_is_rejected_after_alpha_freeze(self):
+        anchors = list(self.config["z_alpha"]["selected_features"][:5])
+        current = anchors + [f"Old{i}" for i in range(3)]
+        self.config["z_alpha"].update({"selected_features": current, "alpha_frozen": True})
+        self.config["z_model"]["derived"]["d_feat"] = 8
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = Path(tmp)
+            entries = [{"id": f"N{i}", "expression": f"New{i}", "category": "rolling", "eligible": True} for i in range(12)]
+            evidence = {
+                "records": entries, "input_data_hash": "data", "catalog_hash": "cat",
+                "label_hash": "label", "rass_evidence_context_hash": "ctx", "evidence_code_hash": "code",
+                "evidence_hash": "evidence",
+            }
+            atomic_write_json(run_root / "configs" / "frozen_feature_catalog.json", {"entries": entries})
+            atomic_write_json(run_root / "configs" / "rass_train_evidence.json", evidence)
+            shortlist = [{"id": item["id"], "expression": item["expression"]} for item in entries]
+            shortlist_evidence = {
+                "method": "agent_shortlist_joint_rass_development_evidence_v3",
+                "base_evidence_hash": "evidence", "shortlist": shortlist,
+                "contains_test_derived_data": False,
+            }
+            shortlist_hash = sha256_bytes(canonical_json_bytes(shortlist_evidence))
+            shortlist_evidence["evidence_hash"] = shortlist_hash
+            atomic_write_json(run_root / "experiments" / "EXP_004" / "logs" / "rass_shortlist_evidence.json", shortlist_evidence)
+            selected = list(current)
+            selected[5] = "New0"
+            proposal = {
+                "agent": "RASS", "method": "agent_factor_exploration", "data_split": "rass_development",
+                "selected_group": "feature_refinement", "target_subset_size": 8,
+                "initial_features": current, "removed_features": ["Old0"],
+                "added_features": [{"id": "N0", "expression": "New0"}], "selected_features": selected,
+                "hypothesis": "replace unstable marginal feature", "local_diagnosis": "alpha instability",
+                "reasoning": "frozen development evidence supports a bounded replacement", "alternatives_considered": ["keep current"],
+                "expected_signature": [{"metric": "ic", "direction": "increase"}],
+                "falsification_condition": "IC does not improve", "confidence": 0.8,
+                "evidence_frozen_after_success": True,
+                "evidence_refs": ["configs/rass_train_evidence.json", "logs/rass_shortlist_evidence.json", f"evidence_hash: {shortlist_hash}"],
+                "provenance": {"data_hash": "data", "catalog_hash": "cat", "label_hash": "label", "evidence_context_hash": "ctx", "evidence_code_hash": "code", "shortlist_evidence_hash": shortlist_hash},
+            }
+            clem = {"selected_agent": "RASS", "selected_layer": "alpha", "confidence": 0.8}
+            outcome = validate_proposal(REPO_ROOT, run_root, self.config, "EXP_004", clem, proposal)
+            self.assertFalse(outcome.passed)
+            self.assertIn("RASS_DISABLED_AFTER_ALPHA_RESOLUTION", outcome.reason_codes)
 
 
 if __name__ == "__main__":

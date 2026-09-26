@@ -16,7 +16,7 @@ class SplitWindow:
 
 
 def split_window(config: dict, split: str, researcher: bool = False) -> SplitWindow:
-    if split not in {"train", "valid", "test"}:
+    if split not in {"train", "train_valid", "agent_valid", "test"}:
         raise ContractError(f"UNKNOWN_SPLIT: {split}")
     if split == "test" and not researcher:
         raise IsolationError("ADAPTIVE_TEST_SPLIT_DENIED")
@@ -71,4 +71,3 @@ def validate_panel_coverage(
             raise DataCoverageError(f"LIMIT_UP_PANEL_COVERAGE_MISSING: {trade.date()}")
         if trade not in downs:
             raise DataCoverageError(f"LIMIT_DOWN_PANEL_COVERAGE_MISSING: {trade.date()}")
-

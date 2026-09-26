@@ -9,6 +9,9 @@ data_repairs/
 
 # Generated experiment state and artifacts.
 runs/
+runs_history/
+controller_logs/
+backups/
 
 # Python caches and local tooling state.
 __pycache__/
@@ -35,3 +38,4 @@ Thumbs.db
 # Slurm scheduler logs (keep the directory itself in Git).
 slurm_logs/*.out
 slurm_logs/*.err
+slurm_logs/*.log

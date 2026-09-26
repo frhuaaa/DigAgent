@@ -9,8 +9,7 @@
       "values": [
         "Ref($close, 5)/$close",
         "Mean($close, 5)/$close",
-        "Std($close, 20)/$close",
-        "Corr($close, Log($volume+1), 5)"
+        "Std($close, 20)/$close"
       ]
     }
   ],
@@ -26,8 +25,10 @@
     "target": "Ref($close, -2) / Ref($close, -1) - 1",
     "train_start_time": "2020-01-01",
     "train_end_time": "2023-12-31",
-    "valid_start_time": "2024-01-01",
-    "valid_end_time": "2024-12-31",
+    "train_valid_start_time": "2024-01-01",
+    "train_valid_end_time": "2024-12-31",
+    "agent_valid_start_time": "2024-01-01",
+    "agent_valid_end_time": "2024-12-31",
     "test_start_time": "2025-01-01",
     "test_end_time": "2026-06-30",
     "primary_metric": "sharpe",
@@ -54,14 +55,12 @@
       "$low/$close",
       "$vwap/$close",
       "Ref($close, 1)/$close",
-      "Ref($volume, 1)/($volume+1e-12)",
       "Ref($close, 5)/$close",
       "Mean($close, 5)/$close",
-      "Std($close, 20)/$close",
-      "Corr($close, Log($volume+1), 5)"
+      "Std($close, 20)/$close"
     ],
     "alpha_frozen": false,
-    "alpha_frozen_after_success": true
+    "evidence_frozen_after_success": true
   },
   "z_model": {
     "model_name": "lstm",
@@ -74,7 +73,7 @@
       "metric": "ic",
       "optimizer": "adam",
       "batch_size": 2048,
-      "n_jobs": 0,
+      "n_jobs": 8,
       "label_norm": true
     },
     "train_params": {

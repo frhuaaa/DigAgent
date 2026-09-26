@@ -9,11 +9,15 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from core.agent_runtime import AgentRuntime
+from core.agent_runtime import (
+    AgentRuntime,
+    canonicalize_rass_contract_metadata,
+    canonicalize_rass_selected_features,
+)
 from core.contract_validator import validate_proposal
 from core.errors import ContractError
 from core.executor import _expected_checkpoint_config_hash
-from core.evidence_builder import build_rass_shortlist_evidence
+from core.evidence_builder import _rass_period_mask, build_rass_shortlist_evidence, rass_evidence_periods
 from core.io_utils import atomic_write_json
 from core.orchestrator import _memory_candidate, _memory_contract_rejection
 from scripts.audit_researcher_outputs import REQUIRED_TEST_ARTIFACTS, build_researcher_outputs_audit
@@ -23,6 +27,88 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class RassTwoStageTests(unittest.TestCase):
+    def test_rass_provenance_and_refs_are_derived_not_copied_by_agent(self):
+        proposal = {
+            "provenance": {"catalog_hash": "one-character-copy-error"},
+            "evidence_refs": ["invented/path.json"],
+        }
+        evidence = {
+            "input_data_hash": "data",
+            "catalog_hash": "catalog",
+            "label_hash": "label",
+            "rass_evidence_context_hash": "context",
+            "evidence_code_hash": "code",
+        }
+        joint_evidence = {"evidence_hash": "shortlist"}
+        normalized = canonicalize_rass_contract_metadata(proposal, evidence, joint_evidence)
+        self.assertEqual(
+            normalized["provenance"],
+            {
+                "data_hash": "data",
+                "catalog_hash": "catalog",
+                "label_hash": "label",
+                "evidence_context_hash": "context",
+                "evidence_code_hash": "code",
+                "shortlist_evidence_hash": "shortlist",
+            },
+        )
+        self.assertEqual(
+            normalized["evidence_refs"],
+            [
+                "configs/rass_train_evidence.json",
+                "logs/rass_shortlist_evidence.json",
+                "evidence_hash: shortlist",
+            ],
+        )
+        self.assertEqual(proposal["provenance"]["catalog_hash"], "one-character-copy-error")
+
+    def test_rass_selected_features_are_derived_from_expressions_not_ids(self):
+        anchors = [f"Anchor{i}" for i in range(5)]
+        proposal = {
+            "selected_group": "initial_feature_bootstrap",
+            "added_features": [
+                {"id": "KUP2", "expression": "KUP2_EXPR"},
+                {"id": "STD30", "expression": "STD30_EXPR"},
+                {"id": "CORD30", "expression": "CORD30_EXPR"},
+            ],
+            "selected_features": anchors + ["KUP2", "STD30", "CORD30"],
+        }
+        normalized = canonicalize_rass_selected_features(proposal, anchors)
+        self.assertEqual(
+            normalized["selected_features"],
+            anchors + ["KUP2_EXPR", "STD30_EXPR", "CORD30_EXPR"],
+        )
+        self.assertEqual(proposal["selected_features"][-3:], ["KUP2", "STD30", "CORD30"])
+
+    def test_rass_evidence_periods_are_prior_three_calendar_years_and_label_aligned(self):
+        calendar = pd.to_datetime([
+            "2021-12-29", "2021-12-30", "2021-12-31",
+            "2022-12-28", "2022-12-29", "2022-12-30",
+            "2023-12-27", "2023-12-28", "2023-12-29",
+        ])
+        with patch("core.evidence_builder.D.calendar", return_value=calendar, create=True):
+            periods = rass_evidence_periods({"task": {"run_id": "2024"}})
+        self.assertEqual(
+            periods,
+            (
+                {"period_id": "2021", "start_time": "2021-01-01", "end_time": "2021-12-31", "signal_end_time": "2021-12-29"},
+                {"period_id": "2022", "start_time": "2022-01-01", "end_time": "2022-12-31", "signal_end_time": "2022-12-28"},
+                {"period_id": "2023", "start_time": "2023-01-01", "end_time": "2023-12-31", "signal_end_time": "2023-12-27"},
+            ),
+        )
+
+    def test_rass_period_mask_purges_boundary_crossing_labels(self):
+        periods = (
+            {"start_time": "2021-01-01", "signal_end_time": "2021-12-29"},
+            {"start_time": "2022-01-01", "signal_end_time": "2022-12-28"},
+            {"start_time": "2023-01-01", "signal_end_time": "2023-12-27"},
+        )
+        dates = pd.DatetimeIndex(["2021-12-29", "2021-12-30", "2022-01-03", "2022-12-28", "2022-12-29", "2023-01-03", "2023-12-27", "2023-12-28"])
+        self.assertEqual(
+            _rass_period_mask(dates, periods).tolist(),
+            [True, False, True, True, False, True, True, False],
+        )
+
     def test_shortlist_is_exactly_twelve_unique_eligible_nonanchors(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_root = Path(tmp)
@@ -41,10 +127,10 @@ class RassTwoStageTests(unittest.TestCase):
             proposal = {
                 "agent": "RASS",
                 "stage": "train_shortlist",
-                "data_split": "train",
+                "data_split": "rass_development",
                 "shortlist_size": 12,
                 "shortlist": [{"id": item["id"], "expression": item["expression"]} for item in records],
-                "reasoning": "diverse train-only candidates",
+                "reasoning": "diverse development-evidence candidates",
                 "diversity_rationale": "multiple nonredundant factor families",
                 "evidence_hash": "base-hash",
             }
@@ -57,10 +143,10 @@ class RassTwoStageTests(unittest.TestCase):
             with self.assertRaises(ContractError):
                 runtime.validate_rass_shortlist(proposal)
 
-    def test_joint_shortlist_evidence_uses_train_only_daily_cross_sections(self):
+    def test_joint_shortlist_evidence_uses_fixed_rolling_development_views(self):
         anchors = [f"Anchor{i}" for i in range(6)]
         shortlist = [{"id": f"F{i:02d}", "expression": f"Expr{i:02d}"} for i in range(12)]
-        dates = pd.date_range("2020-01-01", periods=3, freq="D")
+        dates = pd.date_range("2021-01-04", periods=3, freq="D")
         instruments = [f"S{i:03d}" for i in range(25)]
         index = pd.MultiIndex.from_product([instruments, dates], names=["instrument", "datetime"])
         rng = np.random.default_rng(0)
@@ -68,19 +154,27 @@ class RassTwoStageTests(unittest.TestCase):
         frame = pd.DataFrame(rng.normal(size=(len(index), len(columns))), index=index, columns=columns)
         config = {
             "task": {
+                "run_id": "2024",
                 "train_start_time": "2020-01-01",
                 "train_end_time": "2020-01-03",
             },
             "z_alpha": {"selected_features": anchors},
         }
+        calendar = pd.to_datetime([
+            "2021-12-29", "2021-12-30", "2021-12-31",
+            "2022-12-28", "2022-12-29", "2022-12-30",
+            "2023-12-27", "2023-12-28", "2023-12-29",
+        ])
         with patch("core.evidence_builder.initialize_qlib"), patch(
             "core.evidence_builder.resolve_market_instruments",
             return_value=({name: [] for name in instruments}, []),
-        ), patch("core.evidence_builder.D.features", return_value=frame, create=True):
+        ), patch("core.evidence_builder.D.calendar", return_value=calendar, create=True), patch("core.evidence_builder.D.features", return_value=frame, create=True):
             evidence = build_rass_shortlist_evidence(REPO_ROOT, config, shortlist, "base-hash")
-        self.assertEqual(evidence["data_split"], "train")
+        self.assertEqual(evidence["data_split"], "rass_development")
         self.assertEqual(len(evidence["pairwise_daily_cross_sectional_correlation"]), 66)
         self.assertEqual(len(evidence["marginal_information_after_anchor_residualization"]), 12)
+        self.assertEqual([item["period_id"] for item in evidence["rolling_evaluation_periods"]], ["2021", "2022", "2023"])
+        self.assertTrue(all("rolling_residual_evidence" in item for item in evidence["marginal_information_after_anchor_residualization"]))
         self.assertTrue(evidence["evidence_hash"])
 
 
@@ -100,7 +194,7 @@ class RapaRecoveryTests(unittest.TestCase):
 
 
 class AntiRepetitionTests(unittest.TestCase):
-    def test_rejected_parameter_cannot_repeat_from_same_parent(self):
+    def test_rejected_rapa_parameter_may_probe_opposite_direction(self):
         accepted = {
             "z_portfolio": {"risk_aversion": 1.0},
             "z_alpha": {"selected_features": [], "alpha_frozen": True},
@@ -111,12 +205,12 @@ class AntiRepetitionTests(unittest.TestCase):
             "agent": "RAPA",
             "selected_group": "portfolio_objective",
             "local_diagnosis": "risk translation remains unresolved",
-            "hypothesis": "lower risk aversion improves expression",
+                "hypothesis": "opposite local probe improves expression",
             "diff": [{
                 "op": "replace",
                 "path": "z_portfolio.risk_aversion",
                 "old_value": 1.0,
-                "new_value": 0.5,
+                "new_value": 1.1,
             }],
             "reasoning": "validation-only portfolio evidence",
             "expected_signature": [{"metric": "risk_term_mean", "direction": "decrease"}],
@@ -134,13 +228,16 @@ class AntiRepetitionTests(unittest.TestCase):
                 "parent": "EXP_001",
                 "layer": "portfolio",
                 "group": "portfolio_objective",
-                "intervention": [{"path": "z_portfolio.risk_aversion", "new_value": 0.1}],
+                "intervention": [{
+                    "path": "z_portfolio.risk_aversion",
+                    "old_value": 1.0,
+                    "new_value": 0.9,
+                }],
                 "verdict": "FALSIFIED",
                 "accepted": False,
             }) + "\n", encoding="utf-8")
             outcome = validate_proposal(REPO_ROOT, run_root, accepted, "EXP_003", clem, proposal)
-            self.assertFalse(outcome.passed)
-            self.assertIn("REPEATED_REJECTED_PARAMETER_SAME_PARENT", outcome.reason_codes)
+            self.assertTrue(outcome.passed, outcome.reason_codes)
 
 
 class MemoryStateTests(unittest.TestCase):

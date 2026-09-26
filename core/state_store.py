@@ -43,11 +43,17 @@ class StateStore:
         state.update({"status": "ADAPTING", "accepted_experiment_id": "EXP_000", "next_round": 1})
         atomic_write_json(self.state_path, state)
 
-    def promote(self, candidate: dict, experiment_id: str, next_round: int, structural_rass: bool = False) -> dict:
+    def promote(
+        self,
+        candidate: dict,
+        experiment_id: str,
+        next_round: int,
+        freeze_alpha_on_promotion: bool = False,
+    ) -> dict:
         parent_config_bytes = self.current_path.read_bytes()
         parent_state_bytes = self.state_path.read_bytes()
         promoted = copy.deepcopy(candidate)
-        if structural_rass:
+        if freeze_alpha_on_promotion:
             promoted["z_alpha"]["alpha_frozen"] = True
             refresh_effective_config_hash(promoted)
         state = self.state()
@@ -77,6 +83,52 @@ class StateStore:
         state = self.state()
         state.update({"status": "ADAPTING", "last_rejected_experiment_id": experiment_id, "next_round": next_round})
         atomic_write_json(self.state_path, state)
+
+    def freeze_five_factor_alpha_after_rass_failures(
+        self,
+        experiment_id: str,
+        next_round: int,
+        failed_attempts: int,
+    ) -> dict:
+        """Atomically keep the accepted five-factor parent and disable RASS."""
+
+        parent_config_bytes = self.current_path.read_bytes()
+        parent_state_bytes = self.state_path.read_bytes()
+        frozen = self.current()
+        if frozen["z_alpha"].get("alpha_frozen", False):
+            raise ResumeError("RASS_FALLBACK_ALPHA_ALREADY_FROZEN")
+        if len(frozen["z_alpha"].get("selected_features", [])) != 5:
+            raise ResumeError("RASS_FALLBACK_REQUIRES_FIVE_FACTOR_PARENT")
+        frozen["z_alpha"]["alpha_frozen"] = True
+        refresh_effective_config_hash(frozen)
+        state = self.state()
+        state.update({
+            "status": "ADAPTING",
+            "last_rejected_experiment_id": experiment_id,
+            "next_round": next_round,
+            "rass_resolution": "fallback_five_features_after_three_failures",
+            "rass_failed_attempts": failed_attempts,
+        })
+        transaction = {
+            "phase": "PREPARED",
+            "experiment_id": experiment_id,
+            "parent_config_json": parent_config_bytes.decode("utf-8"),
+            "parent_state_json": parent_state_bytes.decode("utf-8"),
+        }
+        atomic_write_json(self.transaction_path, transaction)
+        try:
+            atomic_write_json(self.current_path, frozen)
+            atomic_write_json(self.state_path, state)
+            transaction["phase"] = "COMMITTED"
+            atomic_write_json(self.transaction_path, transaction)
+            self.transaction_path.unlink()
+        except Exception:
+            atomic_write_bytes(self.current_path, parent_config_bytes)
+            atomic_write_bytes(self.state_path, parent_state_bytes)
+            if self.transaction_path.exists():
+                self.transaction_path.unlink()
+            raise
+        return frozen
 
     def fail(self, reason: str, experiment_id: str | None = None) -> None:
         state = self.state()

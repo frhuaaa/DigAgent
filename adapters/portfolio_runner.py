@@ -29,6 +29,38 @@ def read_panel(path: Path) -> pd.DataFrame:
     return frame.apply(pd.to_numeric, errors="coerce").sort_index()
 
 
+def align_portfolio_asset_panels(
+    returns: pd.DataFrame,
+    limit_up: pd.DataFrame,
+    limit_down: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """Restrict execution to columns physically present in every input panel."""
+    return_columns = list(returns.columns)
+    up_columns = set(limit_up.columns)
+    down_columns = set(limit_down.columns)
+    common = [code for code in return_columns if code in up_columns and code in down_columns]
+    if not common:
+        raise DataCoverageError("PORTFOLIO_PANELS_HAVE_NO_COMMON_ASSETS")
+    union = set(return_columns) | up_columns | down_columns
+    excluded = sorted(union - set(common))
+    audit = {
+        "return_asset_count": len(return_columns),
+        "limit_up_asset_count": len(up_columns),
+        "limit_down_asset_count": len(down_columns),
+        "common_asset_count": len(common),
+        "excluded_asset_count": len(excluded),
+        "excluded_assets": excluded,
+        "policy": "require_column_in_return_limit_up_and_limit_down_panels",
+        "contains_test_derived_data": False,
+    }
+    return (
+        returns.reindex(columns=common),
+        limit_up.reindex(columns=common),
+        limit_down.reindex(columns=common),
+        audit,
+    )
+
+
 def preprocess_prediction_cross_section(values: pd.Series) -> pd.Series:
     clean = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     if clean.empty:
@@ -39,6 +71,16 @@ def preprocess_prediction_cross_section(values: pd.Series) -> pd.Series:
     if not np.isfinite(std) or std <= 1e-12:
         return pd.Series(0.0, index=winsorized.index, dtype=float)
     return (winsorized - float(winsorized.mean())) / std
+
+
+def _safe_rank_corr(left: pd.Series, right: pd.Series) -> float:
+    frame = pd.concat([left.rename("left"), right.rename("right")], axis=1).replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    if len(frame) < 2 or frame["left"].nunique() < 2 or frame["right"].nunique() < 2:
+        return float("nan")
+    value = float(frame["left"].corr(frame["right"], method="spearman"))
+    return value if np.isfinite(value) else float("nan")
 
 
 def project_box_simplex(vector: np.ndarray, target: float, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
@@ -103,10 +145,15 @@ def optimize_mean_variance(
     lower: np.ndarray,
     upper: np.ndarray,
     config: dict,
+    turnover_penalty: float | None = None,
 ) -> np.ndarray:
     portfolio = config["z_portfolio"]
     risk_aversion = float(portfolio["risk_aversion"])
-    turnover_penalty = float(portfolio["turnover_penalty"])
+    turnover_penalty = (
+        float(portfolio["turnover_penalty"])
+        if turnover_penalty is None
+        else float(turnover_penalty)
+    )
     if covariance is None:
         coefficient = np.maximum(risk_aversion * variance + turnover_penalty, 1e-12)
         linear = mu + 2.0 * turnover_penalty * old_weights
@@ -148,13 +195,26 @@ def _drift(weights: pd.Series, realized: pd.Series, gross_return: float, thresho
     return {str(code): float(weight) for code, weight in values.items() if weight > threshold}
 
 
-def _objective(mu: np.ndarray, variance: np.ndarray, covariance: np.ndarray | None, new: np.ndarray, old: np.ndarray, config: dict) -> dict[str, float]:
+def _objective(
+    mu: np.ndarray,
+    variance: np.ndarray,
+    covariance: np.ndarray | None,
+    new: np.ndarray,
+    old: np.ndarray,
+    config: dict,
+    turnover_penalty: float | None = None,
+) -> dict[str, float]:
     portfolio = config["z_portfolio"]
+    effective_turnover_penalty = (
+        float(portfolio["turnover_penalty"])
+        if turnover_penalty is None
+        else float(turnover_penalty)
+    )
     alpha_term = float(mu @ new)
     risk_raw = float(np.sum(variance * new ** 2)) if covariance is None else float(new @ covariance @ new)
     turnover_raw = float(np.sum((new - old) ** 2))
     risk_term = float(portfolio["risk_aversion"]) * risk_raw
-    turnover_term = float(portfolio["turnover_penalty"]) * turnover_raw
+    turnover_term = effective_turnover_penalty * turnover_raw
     denominator = max(abs(alpha_term), 1e-20)
     return {
         "alpha_term": alpha_term,
@@ -193,6 +253,8 @@ def run_mean_variance(
     diagnostic_rows: list[dict] = []
     order_rows: list[dict] = []
     objective_rows: list[dict] = []
+    has_successful_rebalance = False
+    previous_processed = pd.Series(dtype=float)
 
     for signal_date in alpha.index:
         signal_date = pd.Timestamp(signal_date).normalize()
@@ -204,6 +266,8 @@ def run_mean_variance(
         raw = alpha.loc[signal_date]
         processed = preprocess_prediction_cross_section(raw)
         missing_signal = processed.empty
+        trade_up = limit_up.loc[trade_date]
+        trade_down = limit_down.loc[trade_date]
 
         if missing_signal:
             codes = list(old.index)
@@ -211,12 +275,18 @@ def run_mean_variance(
             absent = [code for code in processed.index if code not in returns.columns]
             if absent:
                 raise DataCoverageError(f"FINITE_ALPHA_ASSET_NOT_IN_RETURN_PANEL: {absent[:5]}")
-            ranked = list(processed.sort_values(ascending=False, kind="mergesort").index)
+            candidate_up = trade_up.reindex(processed.index)
+            new_entry_buyable = ~(candidate_up.isna() | (candidate_up > 0))
+            ranked = list(
+                processed[new_entry_buyable]
+                .sort_values(ascending=False, kind="mergesort")
+                .index
+            )
             top_new = ranked[:candidate_count]
             codes = list(dict.fromkeys(top_new + list(old.index)))
 
-        up_row = limit_up.loc[trade_date].reindex(codes) if codes else pd.Series(dtype=float)
-        down_row = limit_down.loc[trade_date].reindex(codes) if codes else pd.Series(dtype=float)
+        up_row = trade_up.reindex(codes) if codes else pd.Series(dtype=float)
+        down_row = trade_down.reindex(codes) if codes else pd.Series(dtype=float)
         cannot_buy = up_row.isna() | (up_row > 0)
         cannot_sell = down_row.isna() | (down_row > 0)
         old_vector = np.array([old.get(code, 0.0) for code in codes], dtype=float)
@@ -260,16 +330,40 @@ def run_mean_variance(
             mu = scores * alpha_scale
             history = returns.loc[returns.index <= signal_date]
             variance, covariance = estimate_risk(history, codes, config)
-            new_vector = optimize_mean_variance(mu, variance, covariance, old_vector, target, lower, upper, config)
+            is_initial_build = not has_successful_rebalance
+            effective_turnover_penalty = (
+                0.0 if is_initial_build else float(portfolio["turnover_penalty"])
+            )
+            new_vector = optimize_mean_variance(
+                mu,
+                variance,
+                covariance,
+                old_vector,
+                target,
+                lower,
+                upper,
+                config,
+                turnover_penalty=effective_turnover_penalty,
+            )
+            has_successful_rebalance = True
         else:
             mu = variance = new_vector = old_vector
             covariance = None
+
+        if missing_signal or not codes:
+            is_initial_build = False
+            effective_turnover_penalty = float(portfolio["turnover_penalty"])
 
         target_weights = pd.Series(new_vector, index=codes, dtype=float)
         all_codes = sorted(set(old.index) | set(target_weights.index))
         old_all = old.reindex(all_codes).fillna(0.0)
         new_all = target_weights.reindex(all_codes).fillna(0.0)
         delta = new_all - old_all
+        current_scores = processed.reindex(all_codes) if not missing_signal else pd.Series(dtype=float)
+        signal_weight_rank_corr = _safe_rank_corr(current_scores, new_all)
+        signal_trade_rank_corr = _safe_rank_corr(current_scores, delta)
+        signal_rank_autocorrelation = _safe_rank_corr(previous_processed, processed)
+        weight_persistence = _safe_rank_corr(old_all, new_all)
         for code, change in delta.items():
             if change > 1e-10 and bool((limit_up.loc[trade_date].reindex([code]).isna() | (limit_up.loc[trade_date].reindex([code]) > 0)).iloc[0]):
                 raise ContractError(f"ILLEGAL_LIMIT_UP_BUY: {code} {trade_date.date()}")
@@ -287,12 +381,27 @@ def run_mean_variance(
         benchmark_return = float(benchmark_by_signal.loc[signal_date])
         invested = float(new_all.sum())
         concentration = float(np.sum(new_all.to_numpy(dtype=float) ** 2))
-        obj = _objective(mu, variance, covariance, new_vector, old_vector, config) if codes else {
+        obj = _objective(
+            mu,
+            variance,
+            covariance,
+            new_vector,
+            old_vector,
+            config,
+            turnover_penalty=effective_turnover_penalty,
+        ) if codes else {
             "alpha_term": 0.0, "risk_raw": 0.0, "risk_term": 0.0, "turnover_raw": 0.0,
             "turnover_term": 0.0, "objective_value": 0.0, "risk_alpha_ratio": 0.0,
             "turnover_alpha_ratio": 0.0,
         }
-        objective_rows.append({"signal_date": signal_date, "trade_date": trade_date, "return_date": return_date, **obj})
+        objective_rows.append({
+            "signal_date": signal_date,
+            "trade_date": trade_date,
+            "return_date": return_date,
+            "is_initial_build": bool(is_initial_build),
+            "effective_turnover_penalty": effective_turnover_penalty,
+            **obj,
+        })
         diagnostic_rows.append({
             "signal_date": signal_date,
             "trade_date": trade_date,
@@ -305,6 +414,10 @@ def run_mean_variance(
             "buy_turn": buy_turn,
             "sell_turn": sell_turn,
             "one_way_turn": (buy_turn + sell_turn) / 2.0,
+            "signal_weight_rank_corr": signal_weight_rank_corr,
+            "signal_trade_rank_corr": signal_trade_rank_corr,
+            "signal_rank_autocorrelation": signal_rank_autocorrelation,
+            "weight_persistence": weight_persistence,
             "holding_count": int((new_all > threshold).sum()),
             "optimizer_universe_count": len(codes),
             "portfolio_concentration": concentration,
@@ -316,6 +429,8 @@ def run_mean_variance(
             "invested_weight_shortfall": 1.0 - invested,
             "feasibility_reason_code": reason,
             "missing_signal": bool(missing_signal),
+            "is_initial_build": bool(is_initial_build),
+            "effective_turnover_penalty": effective_turnover_penalty,
             **obj,
         })
         for code, change in delta[delta.abs() > threshold].items():
@@ -326,6 +441,8 @@ def run_mean_variance(
                 "order_weight": float(change),
             })
         holdings = _drift(new_all, realized, gross_return, threshold)
+        if not missing_signal:
+            previous_processed = processed.copy()
 
     diagnostics = pd.DataFrame(diagnostic_rows)
     if diagnostics.empty:
@@ -362,7 +479,14 @@ def run_topk(
         if missing_signal:
             selected = list(old.index)
         else:
-            ranked = list(processed.sort_values(ascending=False, kind="mergesort").index)
+            trade_up = limit_up.loc[trade_date]
+            candidate_up = trade_up.reindex(processed.index)
+            new_entry_buyable = ~(candidate_up.isna() | (candidate_up > 0))
+            ranked = list(
+                processed[new_entry_buyable]
+                .sort_values(ascending=False, kind="mergesort")
+                .index
+            )
             rank_position = {code: index for index, code in enumerate(ranked)}
             outside = sorted([code for code in old.index if code not in ranked[:candidate_count]], key=lambda code: rank_position.get(code, len(ranked)), reverse=True)
             dropped = set(outside[:drop_count])

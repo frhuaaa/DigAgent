@@ -21,3 +21,10 @@ class ResumeError(DiagAgentError):
 class ExternalServiceError(DiagAgentError):
     """The selected Agent provider could not satisfy a required call."""
 
+
+class WorkerError(DiagAgentError):
+    """A submitted offline execution worker failed or became unobservable."""
+
+
+class OfflineEvidenceRequired(DiagAgentError):
+    """A validation-safe data computation must run outside the login controller."""

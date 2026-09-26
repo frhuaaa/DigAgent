@@ -1,4 +1,4 @@
-version: 1
+version: 2
 agent: RASS
 layer: alpha
 group_rule: exactly_one_group_per_round
@@ -8,11 +8,11 @@ groups:
     operation: append_to_target_count
     target_path: z_alpha.selected_features
     source_path: z_alpha.feature_pool
-    required_round: 1
-    one_time_only: true
-    required_initial_count: 6
-    target_total_count: 10
-    additions_per_round: 4
+    allowed_while_alpha_frozen: false
+    maximum_failed_executed_candidates: 3
+    allowed_initial_counts: [5]
+    target_total_count: 8
+    additions_rule: target_total_count_minus_initial_count
     selection_mode: agent_exploration
     exploration_stages: 2
     shortlist_size: 12
@@ -28,8 +28,16 @@ groups:
       - anchor_residual_icir
       - anchor_residual_rank_ic
       - positive_residual_ic_ratio
-    agent_must_use_train_only_evidence: true
-    validation_visible_to_rass: false
+      - rolling_period_anchor_residual_metrics
+    fixed_rolling_development_evidence:
+      method: three_complete_calendar_years_before_task_run_id
+      period_rule: [Y-3, Y-2, Y-1]
+      exact_dates_source: frozen_qlib_calendar
+      t_plus_2_label_must_remain_inside_each_period: true
+      preferred_metrics: [rank_ic, rank_icir, ic, icir]
+      deterministic_score_or_top_k_forbidden: true
+    agent_must_use_frozen_development_evidence: true
+    test_visible_to_rass: false
     deterministic_selector_forbidden: true
     require_resolvable_by_qlib: true
     require_not_already_selected: true
@@ -37,16 +45,20 @@ groups:
     forbid_removal: true
     forbid_replacement: true
     forbid_manual_expression_outside_pool: true
-    freeze_alpha_after_success: true
-    acceptance_mode: mandatory_structural_initialization
-    validation_gate_verdict_usage: audit_only
+    freeze_evidence_after_success: true
+    acceptance_mode: ordinary_validation_gate
+    promotion_verdicts: [SUPPORTED, PARTIALLY_SUPPORTED]
+    retry_set_rule: partial_overlap_allowed_but_complete_three_factor_set_must_differ
+    three_failure_action: freeze_original_five_features_and_continue_to_fama_rapa
+    validation_gate_verdict_usage: controls_promotion
 
 # Before a formal run, resolve the named Qlib feature_pool into a deterministic
 # candidate catalog, persist it with a content hash, and freeze it. For the
-# current trajectory, EXP_001 gives the RASS agent train-only factor evidence;
-# the agent preserves the six initial features and explores the catalog to
-# propose exactly four non-duplicate additions. Deterministic code validates
+# current trajectory, every bounded RASS attempt uses the same frozen three-calendar-year development evidence;
+# the agent preserves the initial features and explores the catalog to
+# propose enough non-duplicate additions to reach eight. Deterministic code validates
 # membership, evidence provenance, counts, and leakage boundaries, but does not
 # select or rank factors on the agent's behalf. After successful
-# execution the ten-feature alpha is accepted and frozen regardless of the
-# audit-only validation verdict. RASS cannot run again in this trajectory.
+# execution the ordinary agent-valid portfolio Gate accepts or rejects the
+# candidate. Rejected candidates roll back to the five anchors; after three
+# failures the five-factor alpha is frozen and downstream optimization begins.

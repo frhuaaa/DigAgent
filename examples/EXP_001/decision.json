@@ -4,37 +4,61 @@
   "clem": {
     "selected_agent": "RASS",
     "selected_layer": "alpha",
-    "failure_summary": "The six-feature baseline has insufficient representation breadth.",
-    "supporting_evidence": ["EXP_000 contains the frozen six-feature bootstrap baseline."],
+    "failure_summary": "The five-feature baseline has insufficient representation breadth.",
+    "supporting_evidence": ["EXP_000 contains the frozen five-feature bootstrap baseline."],
     "why_not_other_layers": ["The mandatory alpha bootstrap precedes model and portfolio adaptation."],
-    "intervention_goal": "Expand the feature representation from six to ten factors.",
+    "intervention_goal": "Expand the feature representation from five to eight factors.",
     "confidence": 1.000
   },
   "specialist": {
     "agent": "RASS",
     "selected_group": "initial_feature_bootstrap",
     "method": "agent_factor_exploration",
+    "data_split": "rass_development",
+    "target_subset_size": 8,
     "local_diagnosis": "The anchors emphasize contemporaneous price ratios and one-day lags but lack medium-horizon momentum, smoothing, dispersion, and price-volume interaction.",
     "initial_features": [
       "$open/$close", "$high/$close", "$low/$close", "$vwap/$close",
-      "Ref($close, 1)/$close", "Ref($volume, 1)/($volume+1e-12)"
+      "Ref($close, 1)/$close"
     ],
+    "removed_features": [],
     "added_features": [
       {"id": "ROC5", "expression": "Ref($close, 5)/$close"},
       {"id": "MA5", "expression": "Mean($close, 5)/$close"},
-      {"id": "STD20", "expression": "Std($close, 20)/$close"},
-      {"id": "CORR5", "expression": "Corr($close, Log($volume+1), 5)"}
+      {"id": "STD20", "expression": "Std($close, 20)/$close"}
     ],
-    "reasoning": "The Agent selected four complementary Alpha158 factors after comparing complete train-only evidence. This is an illustrative choice, not a frozen rule or recommended winning subset.",
+    "selected_features": [
+      "$open/$close", "$high/$close", "$low/$close", "$vwap/$close",
+      "Ref($close, 1)/$close", "Ref($close, 5)/$close",
+      "Mean($close, 5)/$close", "Std($close, 20)/$close"
+    ],
+    "hypothesis": "Complementary multi-horizon price and volume structure improves the five-anchor representation.",
+    "reasoning": "The Agent selected three complementary Alpha158 factors after comparing fixed annual 2021-2024 development evidence. This is an illustrative choice, not a frozen rule or recommended winning subset.",
     "alternatives_considered": ["BETA5", "RSQR5", "WVMA5"],
-    "expected_signature": {"validation_ic": "stable_or_improve", "validation_sharpe": "stable_or_improve"},
+    "expected_signature": [
+      {"metric": "ic", "direction": "stable_or_improve"},
+      {"metric": "sharpe_ratio", "direction": "stable_or_improve"}
+    ],
     "falsification_condition": "The broader representation is falsified if validation Sharpe worsens materially or its declared mechanism moves opposite.",
     "confidence": 0.720,
-    "evidence_refs": ["artifacts/rass_train_evidence.json"]
+    "evidence_frozen_after_success": true,
+    "evidence_refs": [
+      "configs/rass_train_evidence.json",
+      "logs/rass_shortlist_evidence.json",
+      "evidence_hash: illustrative_shortlist_hash"
+    ],
+    "provenance": {
+      "data_hash": "illustrative_data_hash",
+      "catalog_hash": "illustrative_catalog_hash",
+      "label_hash": "illustrative_label_hash",
+      "evidence_context_hash": "illustrative_evidence_context_hash",
+      "evidence_code_hash": "illustrative_code_hash",
+      "shortlist_evidence_hash": "illustrative_shortlist_hash"
+    }
   },
   "contract": {
     "status": "PASSED",
     "reason_codes": [],
-    "verified": ["train_only_evidence", "append_only", "six_plus_four_equals_ten", "catalog_membership", "no_test_access"]
+    "verified": ["shared_year_scoped_rass_evidence", "append_only", "initial_plus_additions_equals_eight", "catalog_membership", "no_test_access"]
   }
 }

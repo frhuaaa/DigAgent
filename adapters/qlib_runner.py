@@ -16,6 +16,7 @@ from qlib.data.dataset.loader import QlibDataLoader
 from qlib.data.dataset.processor import CSZScoreNorm, DropnaLabel, Fillna, ProcessInf, ZScoreNorm
 
 from core.errors import ContractError, DataCoverageError, IsolationError
+from core.prediction_mode import prediction_mode_preset
 from core.split_guard import aligned_trade_return_dates, purged_signal_dates, split_window
 
 
@@ -142,8 +143,10 @@ def resolve_feature_catalog(pool_name: str) -> list[dict[str, str]]:
 def build_bundle(repo_root: Path, config: dict) -> QlibBundle:
     if config.get("pipeline_contract") != "qlib_ts_lstm_v1":
         raise ContractError("UNSUPPORTED_PIPELINE_CONTRACT")
-    if config["task"]["target"] != RAW_LABEL_EXPRESSION:
-        raise ContractError("RAW_LABEL_EXPRESSION_FROZEN")
+    preset = prediction_mode_preset(config)
+    target_expression = preset["target"]
+    if config["task"]["target"] != target_expression:
+        raise ContractError("PREDICTION_MODE_TARGET_MISMATCH")
     initialize_qlib(repo_root, config)
     instruments, _ = resolve_market_instruments(repo_root, config)
     task = config["task"]
@@ -152,8 +155,8 @@ def build_bundle(repo_root: Path, config: dict) -> QlibBundle:
     loader = QlibDataLoader(
         config={
             "feature": (features, feature_names),
-            "label": ([RAW_LABEL_EXPRESSION], ["LABEL0"]),
-            "raw_label": ([RAW_LABEL_EXPRESSION], ["RAW_LABEL0"]),
+            "label": ([target_expression], ["LABEL0"]),
+            "raw_label": ([target_expression], ["RAW_LABEL0"]),
         },
         freq="day",
     )
@@ -177,7 +180,7 @@ def build_bundle(repo_root: Path, config: dict) -> QlibBundle:
     )
     segments = {
         name: (task[f"{name}_start_time"], task[f"{name}_end_time"])
-        for name in ("train", "valid", "test")
+        for name in ("train", "train_valid", "agent_valid", "test")
     }
     dataset = ContractTSDatasetH(handler=handler, segments=segments, step_len=int(config["z_model"]["sequence_window"]))
     calendar = [pd.Timestamp(item).normalize() for item in D.calendar(start_time=task["runtime_handler_start_time"], end_time=task["test_end_time"], freq="day")]
@@ -205,9 +208,17 @@ def write_alpha_panel(
     if long.duplicated(["datetime", "panel_code"]).any():
         raise ContractError("PREDICTION_PANEL_COLLISION")
     unknown = sorted(set(long["panel_code"]) - set(reference_columns))
-    finite_unknown = long[long["panel_code"].isin(unknown)]["score"].replace([np.inf, -np.inf], np.nan).notna()
-    if finite_unknown.any():
-        raise DataCoverageError(f"PREDICTION_ASSET_NOT_IN_RETURN_HEADER: {unknown[:5]}")
+    finite_unknown = sorted(set(
+        long.loc[
+            long["panel_code"].isin(unknown)
+            & long["score"].replace([np.inf, -np.inf], np.nan).notna(),
+            "panel_code",
+        ]
+    ))
+    # Qlib may produce a valid score for a historical constituent that has no
+    # portfolio return/mask column. Such assets are outside the executable
+    # portfolio universe and are deliberately ignored rather than fatal.
+    long = long[long["panel_code"].isin(reference_columns)]
     wide = long.pivot(index="datetime", columns="panel_code", values="score")
     wide.index = pd.to_datetime(wide.index).normalize()
     wide = wide.reindex(index=pd.DatetimeIndex(signal_dates), columns=reference_columns)
@@ -217,11 +228,13 @@ def write_alpha_panel(
     validate_alpha_panel(output_path, signal_dates, reference_columns)
     wide.index = pd.to_datetime(wide.index, format="%Y%m%d")
     wide.index.name = "date"
+    wide.attrs["dropped_prediction_assets"] = finite_unknown
     return wide
 
 
 def validate_alpha_panel(path: Path, signal_dates: list[pd.Timestamp], reference_columns: list[str]) -> None:
-    first_line = path.open("r", encoding="utf-8").readline().rstrip("\r\n")
+    with path.open("r", encoding="utf-8") as handle:
+        first_line = handle.readline().rstrip("\r\n")
     if not first_line.startswith(","):
         raise ContractError("ALPHA_INDEX_HEADER_NOT_UNNAMED")
     frame = pd.read_csv(path, index_col=0)
@@ -238,24 +251,27 @@ def validate_alpha_panel(path: Path, signal_dates: list[pd.Timestamp], reference
 def benchmark_returns(config: dict, calendar: list[pd.Timestamp], signal_dates: list[pd.Timestamp]) -> pd.Series:
     alignment = aligned_trade_return_dates(calendar, signal_dates)
     task = config["task"]
-    closes = D.features(
+    preset = prediction_mode_preset(config)
+    prices = D.features(
         [task["benchmark"]],
-        ["$close"],
+        [preset["qlib_price_expression"]],
         start_time=min(signal_dates),
         end_time=max(value[1] for value in alignment.values()),
         freq="day",
     )
-    if closes.empty:
+    if prices.empty:
         raise DataCoverageError(f"BENCHMARK_DATA_MISSING: {task['benchmark']}")
-    close_series = closes.iloc[:, 0]
-    close_series.index = close_series.index.get_level_values("datetime")
+    price_series = prices.iloc[:, 0]
+    price_series.index = price_series.index.get_level_values("datetime")
     rows = {}
     for signal, (trade, realized) in alignment.items():
-        if trade not in close_series.index or realized not in close_series.index:
+        if trade not in price_series.index or realized not in price_series.index:
             raise DataCoverageError(f"BENCHMARK_ALIGNMENT_MISSING: {signal.date()}")
-        denominator = float(close_series.loc[trade])
-        numerator = float(close_series.loc[realized])
+        denominator = float(price_series.loc[trade])
+        numerator = float(price_series.loc[realized])
         if not np.isfinite(denominator) or denominator == 0 or not np.isfinite(numerator):
-            raise DataCoverageError(f"BENCHMARK_CLOSE_INVALID: {signal.date()}")
+            raise DataCoverageError(
+                f"BENCHMARK_{preset['price_field'].upper()}_INVALID: {signal.date()}"
+            )
         rows[signal] = numerator / denominator - 1.0
     return pd.Series(rows, name="benchmark_return").sort_index()

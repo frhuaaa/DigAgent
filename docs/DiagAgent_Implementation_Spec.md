@@ -11,6 +11,33 @@ system. Existing code should be inspected for intended logic, not preserved for
 compatibility. This freedom does not extend to immutable files under `data/` or
 to the frozen behavioral and isolation contracts in `AGENTS.md`.
 
+### Current validation-split amendment
+
+The executable contract now uses `train_valid` and `agent_valid` instead of a
+single `valid` split. Per-epoch checkpoint selection and early stopping use
+only `train_valid` (default metric `train_valid.ic`). Train frozen seeds
+`[0,1,2]` concurrently and select a separate best checkpoint for each seed.
+Evaluate all three on `agent_valid`, daily cross-sectionally winsorize/z-score
+each member, equal-weight average, and renormalize the ensemble; its
+`artifacts/agent_valid_alpha.csv`, signal metrics, portfolio result, and
+`result.json` drive CLEM, FAMA, RAPA, the Validation Gate, and memory. Do not
+compute per-epoch `agent_valid` metrics. For now the two periods may overlap or
+be identical, but both must remain after training and before isolated test.
+Where older prose below says generic “validation,” interpret adaptive outcome
+evidence as `agent_valid` and checkpoint/learning-curve evidence as
+`train_valid`; `AGENTS.md` remains authoritative.
+
+### Current prediction-mode amendment
+
+`task.prediction_mode` is the only mode selector. `c2c` remains the default for
+legacy submissions; `o2o` selects the open-to-open label and execution data.
+Configuration materialization binds the label, return panel, directional masks,
+execution price, return definition, and slippage as one preset. The run and
+shared-RASS namespace is
+`runs/<instruments>_<agent-name-or-provider>_<prediction-mode>/`; C2C and O2O
+must never share RASS evidence or a frozen factor cache. This amendment and
+`AGENTS.md` override older C2C-only wording below.
+
 ## 1. Objective and non-objective
 
 DiagAgent iteratively improves the adaptive portions of one explicitly selected
@@ -54,9 +81,8 @@ These rules must be enforced in code, not only described in prompts:
 2. Each adaptive round starts from the latest accepted configuration.
 3. Each round changes one layer and one declared parameter group under one falsifiable hypothesis.
 4. Contract-invalid proposals never reach the executor.
-5. `SUPPORTED` and `PARTIALLY_SUPPORTED` candidates become the accepted state,
-   except that the mandatory RASS structural initialization in `EXP_001`
-   promotes after legal successful execution regardless of its audit verdict.
+5. `SUPPORTED` and `PARTIALLY_SUPPORTED` candidates become the accepted state.
+   RASS uses this same Gate and has no unconditional structural promotion.
 6. Every experiment remains reproducible and auditable even after rollback.
 7. Test artifacts are physically outside every adaptive read allowlist.
 8. All formal-run policies are frozen before the trajectory begins.
@@ -82,6 +108,14 @@ Qlib provider_uri:  ./data/cn_data
 portfolio returns:  ./data/portfolio/c_2_c_1D.csv
 limit-up mask:       ./data/portfolio/mask_limit_up_1D.csv
 limit-down mask:     ./data/portfolio/mask_limit_down_1D.csv
+
+O2O mode instead uses:
+
+```text
+portfolio returns:  ./data/portfolio/o_2_o_1D.csv
+limit-up mask:       ./data/portfolio/mask_limit_up_open_1D.csv
+limit-down mask:     ./data/portfolio/mask_limit_down_open_1D.csv
+```
 ```
 
 All relative paths are resolved from the repository root. Files under `data/`
@@ -100,17 +134,27 @@ batch size, worker count, and label normalization remain explicit. Before
 both sources. The pipeline must not depend on any other unstated Python, Qlib,
 or example-code default.
 
-Validate `task.name` against `[A-Za-z0-9][A-Za-z0-9_-]*`, derive the trajectory
-root `runs/<task.name>/`, and write the fully expanded configuration once to
-`runs/<task.name>/configs/initial.json`. Alongside
+Validate all run-path components, derive the shared namespace as
+`runs/<task.instruments>_<agent.name-or-provider>_<task.prediction_mode>/` and the trajectory root as
+`<namespace>/<task.run_id>/<z_model.model_name>/<launch-MMDDHHMM>/`. Treat the
+four-digit `task.run_id` as the evidence-year identifier and always freeze a
+separate launch minute in the controller environment for every worker. Use
+`--run-timestamp` to resume the same root. Store only
+`rass_train_evidence.json` directly under `<namespace>/<task.run_id>/` for reuse
+across backbones of the same year. Never share an Agent-selected factor set
+across trajectories. Use `rass_evidence_context_hash`, containing only the
+evidence-relevant universe, year, mode, periods, anchors, label, data, catalog,
+and evidence-code identity; never use a full backbone/model configuration hash
+as shared evidence identity. Write the
+fully expanded configuration once to `<run-root>/configs/initial.json`. Alongside
 it, persist validation-safe provenance containing all inserted paths and values
 with their source or rationale, dependency versions, relevant data hashes, and
 the final configuration SHA256. Schema, path, split, feature, label, and data-
 coverage checks must pass before Round 0 starts, and materialization must not
 read test results or test-derived artifacts.
 
-Once `EXP_000` begins, `runs/<task.name>/configs/initial.json` is immutable for
-that formal trajectory. Initialize `runs/<task.name>/configs/current.json` from
+Once `EXP_000` begins, `<run-root>/configs/initial.json` is immutable for
+that formal trajectory. Initialize `<run-root>/configs/current.json` from
 it byte-for-byte or from a
 canonical semantically identical serialization. A later dependency or default
 change requires a new formal trajectory, not regeneration of the existing
@@ -119,6 +163,20 @@ baseline.
 All mutable state and outputs are scoped under that run root. An existing run
 may resume only when its recorded submit path and SHA256 match; otherwise fail
 without overwriting or mixing submissions.
+
+Every trajectory executes EXP_000 with the five submitted anchors and
+`d_feat=5`, then makes a fresh RASS Agent selection using the shared deterministic
+evidence. Accepted and rejected factor sets remain local to the trajectory and
+are never cached or replayed. EXP_001 executes the newly selected eight-factor
+configuration with otherwise default submitted parameters. The normal Gate may
+reject it. RASS may test at most three distinct
+three-factor additions, always from the accepted five-factor parent. Acceptance
+sets `alpha_frozen=true` and `d_feat=8`; three complete failures instead freeze
+the original five factors with `d_feat=5`. Either outcome permanently disables
+later RASS routing.
+Only deterministic RASS evidence is shared; factor selections, models,
+predictions, results, portfolio artifacts, accepted state, and memory remain
+isolated per run.
 
 Dependency-aware reruns:
 
@@ -129,16 +187,16 @@ Dependency-aware reruns:
 | RAPA | portfolio and validation backtest | factors, trained model, predictions |
 
 The executor must verify parent artifact identity/hash before reuse. RAPA reuses
-the latest accepted parent's `valid_alpha.csv`, signal metrics, and selected
+the latest accepted parent's `agent_valid_alpha.csv`, agent-valid signal metrics, and selected
 checkpoint. Interrupted RAPA recovery validates that checkpoint against the
 accepted parent's model-config hash, not against the portfolio-only candidate
 hash. It must not silently reuse stale outputs.
 
 ### 3.2 Canonical prediction-to-portfolio interface
 
-`artifacts/valid_alpha.csv` and any equivalent split prediction passed to the
+`artifacts/agent_valid_alpha.csv` and any equivalent agent-valid prediction passed to the
 portfolio runner must be a UTF-8 comma-separated wide panel physically
-compatible with `data/portfolio/c_2_c_1D.csv`:
+compatible with the return panel selected by `task.prediction_mode`:
 
 ```text
 ,000001_XSHE,000002_XSHE,...,600000_XSHG,...
@@ -189,9 +247,12 @@ For `pipeline_contract=qlib_ts_lstm_v1`, build `TSDatasetH` over
 processors in the declared order `ProcessInf`, train-fit `ZScoreNorm`, then
 `Fillna(0)`; apply `DropnaLabel` then daily-cross-sectional `CSZScoreNorm` to the
 learning label; retain sampler `fillna_type=ffill+bfill`. Use `batch_size=2048`
-and `n_jobs=0`. The training loader shuffles and drops the last incomplete
-batch; train-evaluation, validation, and isolated test-evaluation loaders do
-neither. Derive `d_feat` from the selected-feature count (6 for `EXP_000`, 10
+and `n_jobs=8` for adaptive training and train/validation evaluation. The
+nested isolated researcher test evaluator uses `n_jobs=0` so it never launches
+a second multiprocessing DataLoader inside the Slurm training worker. The
+training loader shuffles and drops the last incomplete batch; train-evaluation,
+validation, and isolated test-evaluation loaders do neither. Derive `d_feat`
+from the selected-feature count (5 for `EXP_000`, 8
 after RASS). Train and validation learning views use `DK_L`; metrics join
 predictions to the separately retained raw `DK_R` label.
 
@@ -252,8 +313,9 @@ test/portfolio_daily_diagnostics.csv
                                test portfolio/evaluator audit detail
 ```
 
-After every epoch checkpoint is written, a separate researcher-side evaluator
-immediately appends that epoch's train/valid/test metrics to
+Start one persistent physically isolated researcher evaluator per experiment;
+it loads the test Dataset exactly once. After every epoch checkpoint is written,
+send it a request that immediately appends that epoch's train/valid/test metrics to
 `test/epoch_metrics.jsonl`; the trainer receives no test values. The remaining
 test files are produced only after validation checkpoint selection and
 adaptive-output sealing. `test/result.json` uses the same exact schema and
@@ -276,7 +338,7 @@ failure; such a mid-run change is fatal to trajectory comparability.
 
 ## 4. Round 0
 
-Round 0 creates `runs/<task.name>/experiments/EXP_000` from the submit JSON explicitly selected
+Round 0 creates `<run-root>/experiments/EXP_000` from the submit JSON explicitly selected
 for the current trajectory.
 
 Procedure:
@@ -288,30 +350,40 @@ Procedure:
 5. Mark `EXP_000` as the initial accepted experiment.
 6. Write the baseline memory item.
 
-## 4.1 Mandatory Round 1 RASS initialization
+## 4.1 Bounded initial RASS search
 
-The current baseline begins with six ordered features. Immediately after
+The current target baseline begins with five ordered features. Immediately after
 `EXP_000`, while `alpha_frozen=false`, CLEM must use the observed configuration
-count as evidence of insufficient initial feature breadth and route `EXP_001`
-to RASS. This is a frozen first-round priority, not an open-ended preference.
+count as evidence of insufficient initial feature breadth and route RASS. This
+priority continues only until one candidate is accepted or three complete
+candidates fail.
 
 RASS is an LLM-backed specialist. It follows `agents/RASS/SYSTEM.md` and
 `agents/RASS/SKILL.md`, explores the frozen catalog using a deterministic
-train-only evidence table, preserves all six anchors in their original order,
-and selects exactly four additions. Its only legal diff is the four-item
-append that produces exactly ten features. It then reruns alpha construction,
+three-complete-calendar-year development evidence table derived from `task.run_id`, preserves all anchors in their original order,
+and selects exactly three additions. Its only legal diff is the three-item
+append that produces exactly eight features. It then reruns alpha construction,
 model training, validation prediction, portfolio optimization, and validation
 evaluation.
 
-After a legal proposal and successful complete execution, promote `EXP_001`
-regardless of its normal Validation Gate verdict and set `alpha_frozen=true`.
-The Gate verdict remains one of `SUPPORTED`, `PARTIALLY_SUPPORTED`, `UNCERTAIN`,
-or `FALSIFIED` and is retained solely for audit and memory; record
-`mandatory_rass_structural_initialization` separately as the acceptance reason.
-Do not add this reason to `result.json` and do not create a fifth verdict. If
-the Agent cannot propose four legal, train-evidence-supported additions,
-or execution has a fatal failure, stop explicitly and do not promote a partial
-feature set. After success, CLEM can no longer route to RASS in this trajectory.
+Every legal proposal reruns the complete model, prediction, portfolio, and
+agent-valid evaluation path. `SUPPORTED` or `PARTIALLY_SUPPORTED` promotes and
+freezes the eight-factor alpha. `UNCERTAIN` or `FALSIFIED` rolls back to
+`EXP_000`; RASS then receives the validation-safe failure outcome and may choose
+another three-factor set. Partial overlap is allowed, but the full unordered
+set may not repeat. After three complete rejected candidates, freeze the
+original five-factor alpha and route only FAMA or RAPA. Contract, API, data, or
+runtime failures are not factor-performance evidence and do not count toward
+the three failures.
+
+For factor-quality evidence under year ID `Y`, use the three complete calendar
+years `Y-3`, `Y-2`, and `Y-1`. Purge the final two trading signal dates of every
+year so the T+2 realized label remains inside that period; derive the last usable
+signal date from the Qlib calendar. Report
+period-level and aggregate IC, ICIR, RankIC, RankICIR, cross-period sign
+stability, worst-period behavior, and shortlist anchor-residual metrics. These quantities
+inform the Agent; they do not define a fixed weighted score or mechanical Top-K
+selector. Test data remains unavailable to RASS.
 
 Round 0 has no CLEM decision, specialist proposal, config diff, or rollback decision.
 
@@ -323,7 +395,6 @@ For round `t >= 1`:
 LOAD_ACCEPTED_PARENT
   -> BUILD_VALIDATION_EVIDENCE
   -> CLEM_DECISION
-       -> NO_INTERVENTION -> STOP
        -> RASS/FAMA/RAPA
   -> RETRIEVE_SPECIALIST_MEMORY
   -> SPECIALIST_PROPOSAL
@@ -356,7 +427,9 @@ CLEM receives only:
 - the complete validation-safe Memory Bank in deterministic order;
 - the frozen CLEM instruction and output schema.
 
-CLEM returns one of `RASS`, `FAMA`, `RAPA`, or `NO_INTERVENTION`, plus:
+CLEM returns RASS while the five-factor alpha remains unresolved and fewer than
+three complete RASS candidates have failed. After acceptance or fallback freezes
+alpha, it returns exactly one of `FAMA` or `RAPA`, plus:
 
 - selected layer;
 - failure summary;
@@ -366,6 +439,26 @@ CLEM returns one of `RASS`, `FAMA`, `RAPA`, or `NO_INTERVENTION`, plus:
 - confidence.
 
 CLEM must not name a parameter, direction, magnitude, or new value.
+
+The Contract Validator also enforces a deterministic one-round routing
+cooldown. If the trailing three post-bootstrap Memory Bank records all selected
+the same FAMA/RAPA layer and all have `accepted=false`, that layer is ineligible
+in the next round. Contract-rejected attempts count because they are persisted
+with `accepted=false`. CLEM must select and re-diagnose the other of FAMA or
+RAPA; that forced-switch round breaks the consecutive streak, so the prior
+layer is eligible again afterward. This is a routing-diversity safeguard, not
+evidence that the forced layer will be accepted.
+
+Absolute validation Sharpe on strategy net daily returns is the sole adaptive
+acceptance objective. Its sign is not a routing gate: positive Sharpe does not
+prove portfolio translation is efficient. Excess annual return, information ratio, and every other
+benchmark-relative metric are diagnostic-only. They may help explain a
+portfolio mechanism, but they must never independently trigger an intervention
+or RAPA routing. A RAPA route
+must include `primary_objective_assessment` with the exact accepted validation
+`sharpe_ratio`; deterministic validation rejects a mismatch or
+`failure_supported=false`. If only excess performance is weak, CLEM must choose
+the best-supported eligible non-portfolio layer.
 
 ### 6.2 Specialists — WHAT + HOW
 
@@ -416,7 +509,7 @@ The selected model YAML is authoritative for exact membership and types.
 RAPA changes exactly one of:
 
 ```text
-alpha_scale | risk_aversion | turnover_penalty
+risk_aversion | turnover_penalty
 ```
 
 Inclusive RAPA bounds are:
@@ -424,43 +517,57 @@ Inclusive RAPA bounds are:
 ```text
 risk_aversion     float [0.1, 2.0]
 turnover_penalty  float [0.1, 2.0]
-alpha_scale       float [0.0008, 0.0015]
 ```
 
-There is no additional per-round relative-change cap inside these ranges.
+`alpha_scale` is frozen. Each adaptive RAPA parameter may be evaluated at most
+four times per trajectory. Its first trial is a local absolute step of at most
+0.1. After an accepted trial, continue in the same direction with a
+non-shrinking step. After a rejected trial, roll back and reverse direction
+with a local step of at most 0.1. A previously evaluated numeric value may not
+be repeated, and there is no fifth refinement trial. Validation Gate promotion
+and rollback retain the best accepted value.
 
-RASS has one append-only `initial_feature_bootstrap` group and is legal only in
-`EXP_001`. It preserves the six initial ordered features and, as an LLM-backed
-specialist, performs two train-only Agent stages. The first reviews every
+There is also no target, preferred band, or reference value for realized
+turnover. Each RAPA round may probe one direction only. Increasing
+`turnover_penalty` must declare an expected turnover decrease; decreasing it
+must declare an expected turnover increase. Net validation Sharpe, which
+already includes costs, controls acceptance.
+
+RASS has only the append-only `initial_feature_bootstrap` group during its
+bounded initial search.
+Bootstrap preserves the initial ordered features and, as an LLM-backed
+specialist, performs two fixed-development-evidence Agent stages. The first reviews every
 deterministically eligible catalog factor and selects exactly twelve candidates.
 Code then computes shortlist-only daily cross-sectional redundancy and
-information remaining after linear residualization against the six anchors.
-The second Agent stage selects exactly four factors from that shortlist,
-reaching ten total. It cannot
+information remaining after linear residualization against the anchors.
+The second Agent stage selects exactly enough factors from that shortlist,
+reaching eight total. It cannot
 remove, replace, reorder, or edit an anchor; add duplicates; or invent
 expressions outside the pool. Resolve, persist, and hash the complete pool
-catalog and train-only evidence table before the formal trajectory so later
+catalog and three-calendar-year rolling evidence table before the formal trajectory so later
 Qlib/library changes cannot alter the available evidence. Deterministic code
 must validate the Agent's proposal but must not select or rank factors for it.
-After successful execution, alpha is frozen for all remaining rounds.
+An accepted eight-factor candidate is frozen. If all three candidates fail,
+the original five-factor alpha is frozen instead. RASS is then no longer an
+eligible route.
 
 Eligibility removes only factors with inadequate coverage or valid IC dates,
 mostly constant daily cross-sections, or duplication of an anchor; it is not a
-predictive ranking. Neither selection stage receives formal validation
-evidence. Validation evaluates the sealed intervention only after execution and
-cannot trigger RASS reselection.
+predictive ranking. Both selection stages receive the same three frozen
+year-scoped factor-evidence views.
 
-Use all train rows for IC, RankIC, coverage, and temporal stability. To keep
+Use the aligned rows from calendar years `Y-3` through `Y-1` for IC, RankIC,
+coverage, and temporal stability. To keep
 initialization bounded, Stage-1 all-candidate redundancy uses a deterministic
 evenly spaced sample capped at 20,000 rows. The twelve-factor shortlist stage
-uses full train daily cross-sections for its joint evidence.
+uses full development-period daily cross-sections for its joint evidence.
 
 The machine-readable versions are the three
 `agents/*/intervention_space.yaml` files. Contract validation must read them;
 do not duplicate numeric bounds in application code.
 
-An intervention route requires CLEM confidence >= 0.5. Lower confidence must
-produce `NO_INTERVENTION`.
+An intervention route requires CLEM confidence >= 0.5. This is comparative
+routing confidence; every in-budget adaptive round must select a legal layer.
 
 ## 7. Deterministic Contract Validator
 
@@ -493,11 +600,11 @@ Keep DiagAgent orchestration independent of project-specific Qlib code. Implemen
 ```text
 load_config(path) -> normalized config
 run_alpha(config, split) -> alpha artifacts
-train_model(config, alpha_artifacts) -> checkpoints + train/valid metric history
+train_model(config, alpha_artifacts) -> checkpoints + train/train_valid metric history
 select_checkpoint(checkpoints, metric=config.z_model.base_params.metric, mode=max) -> checkpoint
-predict(checkpoint, split=valid) -> valid_alpha.csv
-run_portfolio(config, valid_alpha.csv, split=valid) -> account/order artifacts
-evaluate(split=valid) -> exact result metrics + diagnostic evidence
+predict(checkpoint, split=agent_valid) -> agent_valid_alpha.csv
+run_portfolio(config, agent_valid_alpha.csv, split=agent_valid) -> account/order artifacts
+evaluate(split=agent_valid) -> exact result metrics + diagnostic evidence
 ```
 
 Before implementation, inspect the actual Qlib runner and every current
@@ -509,75 +616,82 @@ effective Qlib config, not a replacement for Qlib semantics.
 ## 9. Validation Gate and accepted state
 
 The Validation Gate compares the candidate with its accepted parent using
-validation evidence only. Sharpe is primary; mechanism evidence and frozen
-trade-off guardrails provide the additional ordered checks below:
+validation evidence only. Absolute strategy Sharpe is the sole adaptive
+primary metric; excess metrics are diagnostic-only. The original ordered
+Sharpe/mechanism/trade-off Gate remains active with fixed
+`epsilon_sharpe = 0.002`:
 
 ```text
 fatal contract/data/execution checks
-  -> Sharpe change versus frozen noise tolerance
+  -> Sharpe state versus fixed 0.002 epsilon
   -> expected mechanism signature
   -> frozen trade-off guardrails
 ```
 
 Verdicts:
 
-- `SUPPORTED`: Sharpe improves by more than `epsilon_sharpe`, every declared
-  mechanism metric materially matches, and no guardrail materially degrades.
-  Promote the candidate.
-- `PARTIALLY_SUPPORTED`: Sharpe materially improves without a complete
-  mechanism match, or Sharpe is unchanged while the mechanism state is
-  `MATCH`/`PARTIAL`; no mechanism may be `OPPOSITE` and no guardrail may
-  materially degrade. Promote the candidate.
-- `UNCERTAIN`: Sharpe is unchanged without material mechanism support, or
-  required Sharpe/mechanism/guardrail evidence cannot be computed. Do not
-  promote.
-- `FALSIFIED`: Sharpe materially worsens, a mechanism metric is materially
-  opposite, or a guardrail materially degrades. Do not promote.
+- `SUPPORTED`: Sharpe improves above `0.002`, every declared mechanism metric
+  matches, and no guardrail materially degrades. Promote.
+- `PARTIALLY_SUPPORTED`: Sharpe improves above `0.002` without a complete match,
+  or Sharpe is within `[-0.002, 0.002]` while mechanism state is `MATCH` or
+  `PARTIAL`; no opposite mechanism or material trade-off may exist. Promote.
+- `UNCERTAIN`: unchanged Sharpe without mechanism support, or required evidence
+  is unavailable. Do not promote.
+- `FALSIFIED`: Sharpe worsens below `-0.002`, a mechanism is opposite, or a
+  guardrail materially degrades. Do not promote.
 
 There are currently no hard performance thresholds, including no fixed maximum
 drawdown limit. Contract, data-integrity, isolation, and execution-legality
 failures remain fatal.
 
-`epsilon_sharpe` is computed for each candidate-parent comparison by the frozen
-paired moving-block bootstrap algorithm: align validation daily net returns,
-resample paired rows with 2,000 moving-block bootstrap samples of 20 trading
-days using seed 0 and compute delta Sharpe for every sample. Define
+`epsilon_sharpe` is the frozen constant `0.002`. The paired moving-block
+bootstrap remains in use for mechanism and guardrail metrics: align validation
+daily observations and resample 2,000 moving-block samples of 20 trading days
+using seed 0. Define
 `numerical_tolerance = max(1e-12, 1e-10 * max(abs(parent_statistic),
 abs(candidate_statistic)))`, canonicalize observed deltas at or below that
-tolerance to zero, and set `epsilon_sharpe = max(1.96 *
-std(bootstrap_delta_sharpe, ddof=1), numerical_tolerance)`. Apply the same
-numerical floor to every mechanism and guardrail epsilon. If insufficient data
-prevents the bootstrap calculation, return `UNCERTAIN`.
+tolerance to zero. For each mechanism and guardrail metric, set its epsilon to
+`max(1.96 * std(bootstrap_delta, ddof=1), numerical_tolerance)`. If insufficient data
+prevents a required mechanism or guardrail calculation, return `UNCERTAIN`.
 
 Apply this exact verdict order:
 
 ```text
-1. Sharpe < -epsilon                         -> FALSIFIED
-2. any mechanism metric materially opposite -> FALSIFIED
-3. any guardrail materially degrades         -> FALSIFIED
-4. required evidence unavailable             -> UNCERTAIN
-5. Sharpe > +epsilon and full match           -> SUPPORTED
-6. Sharpe > +epsilon but incomplete match     -> PARTIALLY_SUPPORTED
-7. Sharpe unchanged and match/partial match   -> PARTIALLY_SUPPORTED
-8. otherwise                                  -> UNCERTAIN
+1. Sharpe < -0.002                              -> FALSIFIED
+2. any mechanism metric materially opposite    -> FALSIFIED
+3. any guardrail materially degrades            -> FALSIFIED
+4. required evidence unavailable                -> UNCERTAIN
+5. Sharpe > +0.002 and full match                -> SUPPORTED
+6. Sharpe > +0.002 but incomplete match          -> PARTIALLY_SUPPORTED
+7. Sharpe within [-0.002, 0.002] and match/partial -> PARTIALLY_SUPPORTED
+8. otherwise                                     -> UNCERTAIN
 ```
 
-Equality is inside the unchanged/noise band: `abs(delta) <= epsilon`. Contract,
+Equality at `+0.002` belongs to the unchanged band. Contract,
 data, access-control, and execution failures are fatal before Gate evaluation.
 Store daily Gate inputs in `artifacts/portfolio_daily_diagnostics.csv` and the
 complete deterministic comparison in `validation_gate.json`; do not add these
 diagnostics to the exact top-level `result.json` contract.
 
-Except for the explicitly defined mandatory RASS `EXP_001` structural
-initialization, both `SUPPORTED` and `PARTIALLY_SUPPORTED` promote a candidate.
-Secondary metrics never compensate for materially worse Sharpe. For `EXP_001`, compute
-the same Gate verdict for audit, but successful legal execution—not that
-verdict—controls its structural promotion.
+Both `SUPPORTED` and `PARTIALLY_SUPPORTED` promote. This applies to RASS as
+well: its portfolio-based Gate verdict controls promotion or rollback.
+
+FAMA has one additional explicit promotion override. Compare the candidate's
+full-precision ensemble mean daily validation IC with the accepted parent's
+value. Promote only when the ordinary verdict is `UNCERTAIN`, ensemble
+`delta_valid_ic > 0.001`, at least two of three seed IC deltas are positive,
+and their median exceeds `0.001`. Never override `FALSIFIED`, worse-Sharpe,
+opposite-mechanism, or material-trade-off outcomes. Preserve the ordinary verdict and
+all Sharpe, mechanism, and trade-off evidence in `validation_gate.json`; record
+`promotion_reason = fama_validation_ic_override` and
+`gate_verdict_usage = overridden_by_fama_validation_ic`. Equality at `0.001`
+does not trigger the override. RASS and RAPA never receive this exception, and
+test evidence remains forbidden.
 
 The accepted-state update must be atomic:
 
 ```text
-runs/<task.name>/configs/current.json -> candidate config
+<run-root>/configs/current.json -> candidate config
 accepted_experiment_id -> candidate EXP_xxx
 ```
 
@@ -636,15 +750,25 @@ Missing mask values conservatively block the relevant direction. Apply masks on 
 For each signal date, Qlib alpha generation uses exactly the universe named by
 `task.instruments`. Form the common ranking universe from stocks in that
 configured universe with finite processed alpha scores; do not apply another
-constituent-membership filter at the portfolio boundary. Rank this universe and
-take the Top 100 as new-entry
+constituent-membership filter at the portfolio boundary. On the T+1 trade date,
+remove names whose limit-up mask is positive or missing before ranking; these
+names cannot consume a new-entry candidate slot. Limit-down names remain
+buyable. Rank the remaining finite-alpha universe and take the Top 100 as new-entry
 candidates. The Mean-Variance optimizer universe is those Top-100 new entries
 union every existing holding, including holdings that are no longer eligible
 for new entry, so the optimizer-universe and final holding counts are not
-capped at 100. Return and mask panels supply realized returns and directional
-constraints; they do not define candidate membership. Ignore extra mask
-columns after deterministic reindexing, and treat missing mask values under the
-frozen conservative directional rule.
+capped at 100. Before ranking, restrict the executable universe to finite-alpha
+assets whose columns are physically present in the return, limit-up, and
+limit-down panels. Ignore predicted assets missing from any panel header and
+persist their codes/counts for audit; this is not a fatal data-coverage error.
+After column-level admission, treat a missing mask value on an individual date
+under the frozen conservative directional rule.
+
+The first successful Mean-Variance portfolio build uses an effective turnover
+penalty of zero because no prior portfolio exists. Normal commissions, tax, and
+slippage still apply to that build. Every later rebalance uses the configured
+`turnover_penalty`; the zero-penalty initialization is deterministic execution
+semantics, not a RAPA parameter change.
 
 The TopK comparison is Top100/Drop10. It must receive the same finite-alpha
 ranking universe, Top-100 new-candidate count, signal and return dates,
@@ -663,8 +787,9 @@ Gate trade-off guardrail.
 
 ## 12. Test isolation
 
-Every epoch receives immediate test-model evaluation through a separate
-researcher process after that epoch checkpoint is written. The process appends
+Every epoch receives immediate test-model evaluation through one persistent
+researcher process after that epoch checkpoint is written. The process owns the
+test Dataset for the full experiment, loads it once, and appends
 only to `test/epoch_metrics.jsonl` and returns no test values to the trainer.
 The selected checkpoint receives the complete test prediction, portfolio, and
 27-field evaluation only after the adaptive outputs for that round are sealed.
@@ -673,31 +798,44 @@ the adaptive verdict or state. The adaptive process must use an explicit read
 allowlist such as:
 
 ```text
-allowed: repository configs/ plus active runs/<task.name>/configs/, decision.json,
+allowed: repository configs/ plus active <run-root>/configs/, decision.json,
          result.json, artifacts/validation-safe files, and memory/
 denied:  **/test/**, test metrics, test predictions, test summaries
 ```
 
+Researcher startup and request/response waits have finite frozen timeouts. If
+the persistent worker times out or fails, terminate it, disable further
+per-epoch dispatches for that experiment, record only a generic failure status,
+and continue adaptive training. The final isolated one-shot test evaluation may
+be attempted once with a separate finite timeout; its failure cannot block or
+change the adaptive trajectory.
+
 The researcher-side evaluator writes only to
-`runs/<task.name>/experiments/EXP_xxx/test/`. It writes the per-epoch model
+`<run-root>/experiments/EXP_xxx/test/`. It writes the per-epoch model
 metric curve to `test/epoch_metrics.jsonl`, the selected-checkpoint metric
 object to `test/result.json`, and may retain `test/test_alpha.csv` and
 `test/portfolio_daily_diagnostics.csv` for researcher audit. It must not update
 current config, checkpoint selection, verdicts, memory, routing, stopping,
 prompts, or summaries.
 
+Training shuffle reproducibility is defined by one permutation generated from
+the fixed `task.seed` with `torch.randperm` and reused identically for every
+epoch. Store the fixed seed, epoch, `fixed_across_epochs` policy, algorithm, and
+sample count in `logs/training_metrics.jsonl`; do not persist full permutation
+arrays.
+
 After finalization, a separate researcher subprocess writes
-`runs/<task.name>/test/researcher_outputs_audit.json`. This audit reports only
+`<run-root>/test/researcher_outputs_audit.json`. This audit reports only
 the presence and completion status of required per-round researcher artifacts,
 contains no test metrics, and cannot affect the adaptive state.
 
 After the adaptive trajectory stops, copy the final accepted configuration to
-`runs/<task.name>/configs/final_frozen.json` and record its hash. Any official
+`<run-root>/configs/final_frozen.json` and record its hash. Any official
 final test/reporting stage consumes only this frozen configuration.
 
 ## 13. Memory Bank
 
-Use one append-only `runs/<task.name>/memory/experiments.jsonl` plus materialized
+Use one append-only `<run-root>/memory/experiments.jsonl` plus materialized
 projections for that trajectory:
 
 ```text
@@ -795,16 +933,14 @@ schema. Freeze the resolved selection into the trajectory's initial config.
 
 ## 15. Stop conditions
 
-Stop when any frozen rule triggers:
+Normal adaptive stopping occurs only when the experiment budget is exhausted.
+Weak evidence, diminishing returns, or repeated falsified/uncertain outcomes
+require cross-layer reassessment and the best-supported eligible bounded
+experiment; they do not stop the trajectory. A deterministic safety,
+data-integrity, infrastructure, or required-evidence failure terminates as an
+explicit failure rather than a successful early stop.
 
-- CLEM returns `NO_INTERVENTION`;
-- experiment budget is exhausted;
-- no material unresolved failure remains;
-- repeated interventions are falsified/uncertain and cross-layer reassessment finds no supported action;
-- expected improvement is within validation noise/diminishing returns;
-- a deterministic safety or data-integrity condition fails.
-
-`task.trials = 10` means at most ten adaptive rounds after Round 0
+`task.trials = 10` means ten adaptive rounds after Round 0
 (`EXP_001` through `EXP_010`). The consecutive `UNCERTAIN`/`FALSIFIED` limit is
 also ten, so it does not create an earlier stop by itself; cross-layer
 reassessment remains mandatory after each such verdict.
@@ -826,12 +962,15 @@ Before running a formal trajectory, tests must prove:
 9. The configured validation-only metric selects the checkpoint; default IC and
    all four allowed metrics are tested.
 10. T/T+1/T+2 alignment and both directional masks are correct.
-11. `SUPPORTED` and `PARTIALLY_SUPPORTED` normally update accepted state; also
-    verify the sole structural exception that a legal, successfully executed RASS `EXP_001` is promoted
-    for structural initialization regardless of its audit-only Gate verdict,
-    followed by `alpha_frozen=true` and permanent denial of later RASS routes.
+11. `SUPPORTED` and `PARTIALLY_SUPPORTED` update accepted state. Verify that
+    RASS uses the same Gate, retries only with a non-identical three-factor set,
+    and after three complete failures freezes the original five factors.
+    Verify that every later CLEM decision is restricted to FAMA or RAPA.
+    Verify separately that only FAMA promotes through
+    `fama_validation_ic_override` when `delta_valid_ic > 0.001`, while the
+    ordinary Gate verdict remains unchanged for audit.
 12. Rejected candidates remain auditable and retrievable as memory.
-13. CLEM anti-repetition and `NO_INTERVENTION` work.
+13. CLEM anti-repetition and budget-only normal stopping work.
 14. Test evaluation cannot mutate memory, accepted config, or stopping state.
 
 ## 17. Recommended implementation order

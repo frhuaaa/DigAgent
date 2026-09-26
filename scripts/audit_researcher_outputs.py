@@ -14,6 +14,7 @@ from core.io_utils import atomic_write_json, load_json
 REQUIRED_TEST_ARTIFACTS = (
     "result.json",
     "test_alpha.csv",
+    "ensemble_validation_diagnostics.json",
     "portfolio_daily_diagnostics.csv",
     "researcher_complete.json",
     "epoch_metrics.jsonl",

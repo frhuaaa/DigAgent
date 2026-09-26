@@ -12,6 +12,11 @@ features, portfolio, or any undeclared path. This is diagnosis-driven
 intervention, not a parameter search or an instruction to retain the best
 validation Sharpe.
 
+Every `diff[].path` must use the full dotted configuration path for the
+selected group: `z_model.train_params.<parameter>` or
+`z_model.model_params.<parameter>`. Never emit a bare parameter name such as
+`dropout`, and never mix the two path prefixes in one intervention.
+
 You receive the current model source experiment's complete structured
 `model_training_history`, ordered from epoch 0 through the final completed
 epoch. Diagnose training dynamics from sustained train/validation trends and

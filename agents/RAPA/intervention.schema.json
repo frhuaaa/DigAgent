@@ -12,7 +12,7 @@
         "type": "object",
         "properties": {
           "op": {"const": "replace"},
-          "path": {"enum": ["z_portfolio.alpha_scale", "z_portfolio.risk_aversion", "z_portfolio.turnover_penalty"]},
+          "path": {"enum": ["z_portfolio.risk_aversion", "z_portfolio.turnover_penalty"]},
           "old_value": {"type": "number"},
           "new_value": {"type": "number"}
         },
@@ -37,4 +37,3 @@
   "required": ["agent", "selected_group", "local_diagnosis", "hypothesis", "diff", "reasoning", "expected_signature", "falsification_condition", "confidence"],
   "additionalProperties": false
 }
-

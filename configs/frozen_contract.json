@@ -10,7 +10,25 @@
     "both_attempts_rejected_action": "RECORD_CONTRACT_REJECTED_AND_CONSUME_ROUND"
   },
   "run_storage": {
-    "root_template": "runs/{task.name}",
+    "root_template": "runs/{task.instruments}_{agent.name_or_provider}_{task.prediction_mode}/{task.run_id}/{z_model.model_name}/{launch_MMDDHHMM}",
+    "task_run_id_role": "required_four_digit_evidence_year_identifier",
+    "launch_timestamp_is_always_separate": true,
+    "shared_rass_evidence_template": "runs/{task.instruments}_{agent.name_or_provider}_{task.prediction_mode}/{task.run_id}/rass_train_evidence.json",
+    "shared_rass_evidence_policy": "CACHE_ONLY_DETERMINISTIC_FACTOR_EVIDENCE; NEVER_CACHE_OR_REPLAY_AN_AGENT_SELECTED_FACTOR_SET; EVERY_TRAJECTORY_RUNS_A_FRESH_RASS_SELECTION",
+    "shared_rass_evidence_context_hash_fields": [
+      "task.instruments",
+      "task.run_id",
+      "task.prediction_mode",
+      "z_alpha.feature_pool",
+      "z_alpha.selected_features",
+      "task.train_start_time",
+      "task.train_end_time",
+      "rass_evidence_periods",
+      "target_label",
+      "input_data_hash",
+      "catalog_hash",
+      "evidence_code_hash"
+    ],
     "task_name_pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
     "mutable_subdirectories": [
       "configs",
@@ -22,9 +40,42 @@
     "rapa_recovery_checkpoint_hash_source": "accepted_parent_config",
     "rapa_recovery_requires_reused_from_parent_match": true
   },
+  "prediction_mode": {
+    "source": "task.prediction_mode",
+    "allowed": ["c2c", "o2o"],
+    "default_for_legacy_submissions": "c2c",
+    "single_switch_binds": [
+      "task.target",
+      "z_portfolio.ret_path",
+      "z_portfolio.limit_up_mask_path",
+      "z_portfolio.limit_down_mask_path",
+      "z_portfolio.execution_price",
+      "z_portfolio.return_definition",
+      "z_portfolio.buy_slippage",
+      "z_portfolio.sell_slippage"
+    ],
+    "c2c": {
+      "target": "Ref($close, -2) / Ref($close, -1) - 1",
+      "execution": "alpha[T] -> T+1 close -> close(T+2)/close(T+1)-1",
+      "buy_slippage": 0.0005,
+      "sell_slippage": 0.0005
+    },
+    "o2o": {
+      "target": "Ref($open, -2) / Ref($open, -1) - 1",
+      "execution": "alpha[T] -> T+1 open -> open(T+2)/open(T+1)-1",
+      "buy_slippage": 0.001,
+      "sell_slippage": 0.001
+    },
+    "rass_evidence_cache_identity_includes_prediction_mode": true
+  },
   "clem": {
     "minimum_intervention_confidence": 0.5,
-    "below_threshold_action": "NO_INTERVENTION"
+    "below_threshold_action": "INVALID_DECISION_RETRY_WITH_REQUIRED_LAYER_SELECTION",
+    "allowed_routes_by_phase": {
+      "while_five_factor_alpha_unresolved": ["RASS"],
+      "after_alpha_freeze": ["FAMA", "RAPA"]
+    },
+    "stopping_rule": "ADAPTIVE_ROUND_BUDGET_EXHAUSTED"
   },
   "agent_runtime": {
     "config_path": "configs/agent_models.json",
@@ -47,6 +98,17 @@
     ],
     "mid_trajectory_cuda_failure_action": "FATAL_NO_DEVICE_SWITCH"
   },
+  "model_ensemble": {
+    "enabled": true,
+    "seeds": [0, 1, 2],
+    "parallel_gpu_workers": 3,
+    "checkpoint_selection": "INDEPENDENT_MAX_TRAIN_VALID_IC_PER_SEED",
+    "prediction_combination": "PER_SEED_DAILY_CROSS_SECTIONAL_WINSORIZE_ZSCORE_THEN_EQUAL_WEIGHT_MEAN_THEN_RENORMALIZE",
+    "canonical_agent_valid_alpha": "ENSEMBLE_ONLY",
+    "canonical_test_alpha": "ENSEMBLE_ONLY",
+    "rapa_reuses": "ALL_THREE_ACCEPTED_CHECKPOINTS_AND_CANONICAL_ENSEMBLE_ALPHA",
+    "adaptive_comparison": "ENSEMBLE_CANDIDATE_VS_ENSEMBLE_ACCEPTED_PARENT"
+  },
   "result_contract": {
     "schema_path": "schemas/result.schema.json",
     "top_level_field_count": 27,
@@ -55,6 +117,20 @@
     "float_serialization_decimals": 3,
     "excess_return_definition": "strategy_net_daily_return - aligned_benchmark_daily_return",
     "excess_sharpe_field": "information_ratio"
+  },
+  "adaptive_objective": {
+    "primary_metric": "validation_sharpe_ratio",
+    "return_series": "strategy_net_daily_return",
+    "objective_role": "global_gate_objective_with_explicit_fama_validation_ic_promotion_override",
+    "objective_sign_is_not_a_routing_gate": true,
+    "excess_and_benchmark_relative_metrics_role": "diagnostic_only",
+    "excess_metrics_may_independently_trigger_intervention": false,
+    "excess_metrics_may_independently_trigger_rapa": false,
+    "rapa_requires_structured_primary_objective_assessment": true,
+    "rapa_primary_objective_observed_value_must_match_result_json": true,
+    "rapa_requires_validation_supported_portfolio_opportunity": true,
+    "positive_validation_sharpe_blocks_rapa": false,
+    "turnover_target_or_reference": null
   },
   "researcher_test_output": {
     "enabled_per_round": true,
@@ -103,6 +179,9 @@
     }
   },
   "portfolio_feasibility": {
+    "asset_universe_column_policy": "FINITE_ALPHA_INTERSECTION_RETURN_LIMIT_UP_LIMIT_DOWN_HEADERS",
+    "predicted_asset_missing_from_any_portfolio_panel": "EXCLUDE_AND_AUDIT_NOT_FATAL",
+    "admitted_asset_missing_daily_mask_value": "CONSERVATIVELY_BLOCK_RELEVANT_DIRECTION",
     "target_invested_weight": 1.0,
     "infeasible_full_investment_action": "INVEST_MAXIMUM_FEASIBLE_AND_HOLD_CASH",
     "cash_daily_return": 0.0,
@@ -120,26 +199,24 @@
     "shortfall_is_tradeoff_guardrail": true
   },
   "sharpe_noise": {
-    "method": "paired_moving_block_bootstrap",
-    "bootstrap_samples": 2000,
-    "block_length_trading_days": 20,
-    "random_seed": 0,
-    "standard_error_ddof": 1,
-    "epsilon_multiplier": 1.96,
-    "epsilon_definition": "max(1.96 * std(bootstrap_delta_sharpe, ddof=1), numerical_equivalence_tolerance(parent_sharpe, candidate_sharpe))",
+    "method": "fixed_symmetric_threshold",
+    "epsilon_sharpe": 0.002,
+    "epsilon_definition": "IMPROVED if delta > 0.002; WORSE if delta < -0.002; otherwise UNCHANGED",
     "insufficient_data_verdict": "UNCERTAIN"
   },
   "hard_performance_constraints": [],
   "data_integrity_and_contract_failures_remain_fatal": true,
   "validation_gate": {
     "acceptance_rule_status": "FROZEN",
-    "acceptance_metric": "validation_sharpe_plus_mechanism_and_tradeoff",
+    "acceptance_metric": "validation_sharpe_plus_mechanism_and_tradeoff_with_fixed_sharpe_epsilon",
+    "sharpe_acceptance_delta": 0.002,
+    "acceptance_comparison": "classify Sharpe with fixed epsilon 0.002, then apply the frozen mechanism/trade-off verdict matrix",
     "numerical_equivalence": {
       "absolute_tolerance": 1e-12,
       "relative_tolerance": 1e-10,
       "tolerance_definition": "max(absolute_tolerance, relative_tolerance * max(abs(parent_statistic), abs(candidate_statistic)))",
       "delta_at_or_below_tolerance": "CANONICALIZE_TO_ZERO",
-      "effective_epsilon_definition": "max(bootstrap_epsilon, numerical_equivalence_tolerance)",
+      "effective_epsilon_definition": "Sharpe uses fixed 0.002; mechanism and trade-off metrics use max(bootstrap_epsilon, numerical_equivalence_tolerance)",
       "applies_to": [
         "sharpe",
         "mechanism_metrics",
@@ -148,25 +225,43 @@
     },
     "secondary_metrics_affect_verdict": true,
     "mechanism_match_affects_verdict": true,
+    "tradeoff_guardrails_affect_verdict": true,
     "formal_adaptation_allowed_by_gate_contract": true,
     "promotion_verdicts": [
       "SUPPORTED",
       "PARTIALLY_SUPPORTED"
     ],
-    "structural_promotion_exception": {
-      "experiment_id": "EXP_001",
+    "fama_validation_ic_promotion_override": {
+      "enabled": true,
+      "applies_only_to_agent": "FAMA",
+      "metric": "mean_daily_validation_ic",
+      "epsilon_ic": 0.001,
+      "promotion_condition": "ordinary verdict is UNCERTAIN; ensemble delta_valid_ic > 0.001; at least two of three seed IC deltas are positive; median seed delta_valid_ic > 0.001; no worse Sharpe, opposite mechanism, or material trade-off",
+      "equality_action": "NO_OVERRIDE",
+      "may_override_falsified": false,
+      "ordinary_gate_verdict_is_preserved_for_audit": true,
+      "promotion_reason": "fama_validation_ic_override",
+      "gate_verdict_usage": "overridden_by_fama_validation_ic",
+      "test_evidence_allowed": false
+    },
+    "rass_bounded_initial_search": {
       "agent": "RASS",
       "group": "initial_feature_bootstrap",
-      "selection_mode": "agent_exploration_using_train_only_evidence",
+      "maximum_failed_executed_candidates": 3,
+      "each_candidate_parent": "EXP_000_FIVE_FACTOR_ACCEPTED_BASELINE",
+      "candidate_set_rule": "THREE_ADDITIONS_MAY_PARTIALLY_OVERLAP_BUT_COMPLETE_UNORDERED_SET_MUST_NOT_REPEAT",
+      "selection_mode": "agent_exploration_using_previous_three_complete_calendar_years",
       "deterministic_selector_forbidden": true,
-      "required_initial_feature_count": 6,
-      "required_added_feature_count": 4,
-      "required_final_feature_count": 10,
+      "allowed_initial_feature_counts": [5],
+      "required_added_feature_count_rule": "8 - initial_feature_count",
+      "required_final_feature_count": 8,
       "rass_exploration_stages": 2,
       "agent_shortlist_size": 12,
       "final_selection_must_be_subset_of_shortlist": true,
-      "shortlist_and_final_selection_data": "TRAIN_ONLY",
-      "validation_visible_to_rass": false,
+      "shortlist_and_final_selection_data": "RASS_DEVELOPMENT_Y_MINUS_3_THROUGH_Y_MINUS_1",
+      "development_evidence_year_rule": ["Y-3", "Y-2", "Y-1"],
+      "last_usable_signal_date_rule": "third_from_last_qlib_trading_date_of_each_calendar_year",
+      "test_visible_to_rass": false,
       "deterministic_candidate_eligibility": {
         "minimum_total_coverage": 0.9,
         "minimum_valid_ic_date_ratio": 0.8,
@@ -178,19 +273,30 @@
         "method": "deterministic_evenly_spaced_row_sample",
         "maximum_rows": 20000
       },
+      "fixed_rolling_rass_development_evidence": {
+        "method": "three_complete_calendar_years_before_task_run_id",
+        "period_rule": ["Y-3", "Y-2", "Y-1"],
+        "label_alignment": "purge each period's final two trading signal dates so T+2 remains inside the period",
+        "test_used": false,
+        "agent_judgment_not_fixed_weighted_score": true
+      },
       "stage2_joint_evidence_uses_full_train_daily_cross_sections": true,
       "preserve_initial_features_and_order": true,
       "requires_contract_pass": true,
       "requires_successful_complete_execution": true,
-      "gate_verdict_is_audit_only": true,
-      "acceptance_reason": "mandatory_rass_structural_initialization",
-      "freeze_alpha_after_promotion": true,
-      "later_rass_routes_forbidden": true
+      "gate_verdict_controls_promotion": true,
+      "promotion_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED"],
+      "rejected_candidate_action": "ROLL_BACK_TO_EXP_000_AND_RESELECT_THREE_FACTORS",
+      "third_failure_action": "FREEZE_ORIGINAL_FIVE_FACTOR_ALPHA_AND_CONTINUE_WITH_FAMA_OR_RAPA",
+      "contract_or_runtime_failure_counts_as_candidate_failure": false,
+      "freeze_catalog_and_evidence_after_promotion": true,
+      "later_rass_routes_forbidden_after_acceptance_or_three_failure_fallback": true,
+      "post_bootstrap_routes": ["FAMA", "RAPA"]
     },
     "sharpe_states": {
-      "IMPROVED": "delta_sharpe > epsilon_sharpe",
-      "UNCHANGED": "abs(delta_sharpe) <= epsilon_sharpe",
-      "WORSE": "delta_sharpe < -epsilon_sharpe"
+      "IMPROVED": "delta_sharpe > 0.002",
+      "UNCHANGED": "-0.002 <= delta_sharpe <= 0.002",
+      "WORSE": "delta_sharpe < -0.002"
     },
     "mechanism_states": {
       "MATCH": "every declared target metric improves in its expected direction by more than its bootstrap epsilon",
@@ -213,15 +319,6 @@
           "higher_is_worse": true
         },
         {
-          "metric": "one_way_turnover_mean",
-          "higher_is_worse": true
-        },
-        {
-          "metric": "transaction_cost_drag_mean",
-          "definition": "mean daily transaction cost rate",
-          "higher_is_worse": true
-        },
-        {
           "metric": "portfolio_concentration_mean",
           "definition": "mean daily sum(weight_i ** 2)",
           "higher_is_worse": true
@@ -231,6 +328,10 @@
           "definition": "1 - invested_weight_mean",
           "higher_is_worse": true
         }
+      ],
+      "diagnostic_only_not_tradeoff_guardrails": [
+        "one_way_turnover_mean",
+        "transaction_cost_drag_mean"
       ],
       "missing_required_guardrail_action": "UNCERTAIN"
     },
@@ -260,16 +361,34 @@
   },
   "anti_repetition": {
     "same_accepted_parent_rejected_parameter_retry": "FORBIDDEN",
+    "rapa_directional_search_exception": "THE_SAME_RAPA_PARAMETER_MAY_REVERSE_AFTER_REJECTION_BUT_AN_ALREADY_TESTED_NUMERIC_VALUE_MAY_NOT_BE_REPEATED",
     "rejected_verdicts": [
       "FALSIFIED",
       "UNCERTAIN"
     ],
     "accepted_parent_change_resets_parameter_eligibility": true,
-    "contract_rejected_attempts_are_recorded_in_memory": true
+    "contract_rejected_attempts_are_recorded_in_memory": true,
+    "three_consecutive_unaccepted_same_layer": {
+      "threshold": 3,
+      "accepted_value": false,
+      "contract_rejected_counts_as_unaccepted": true,
+      "next_round_action": "FORCE_THE_OTHER_OF_FAMA_OR_RAPA_AND_REQUIRE_REDIAGNOSIS",
+      "cooldown_rounds": 1
+    }
   },
   "intervention_spaces": {
     "FAMA": "agents/FAMA/intervention_space.yaml",
     "RAPA": "agents/RAPA/intervention_space.yaml",
-    "RASS": "agents/RASS/intervention_space.yaml"
+    "RASS": "agents/RASS/intervention_space.yaml",
+    "RAPA_directional_search": {
+      "adaptive_parameters": ["risk_aversion", "turnover_penalty"],
+      "frozen_parameters": ["alpha_scale"],
+      "maximum_attempts_per_parameter": 4,
+      "initial_probe_max_absolute_step": 0.1,
+      "accepted_trial_action": "CONTINUE_SAME_DIRECTION_WITH_NON_SHRINKING_STEP",
+      "rejected_trial_action": "ROLLBACK_AND_REVERSE_WITH_LOCAL_STEP_AT_MOST_0.1",
+      "best_value_policy": "VALIDATION_GATE_PROMOTION_AND_ROLLBACK",
+      "fifth_refinement_trial": "FORBIDDEN"
+    }
   }
 }

@@ -18,6 +18,8 @@ Statistic = Callable[[pd.DataFrame], float]
 # so floating-point round-off is never interpreted as economic evidence.
 NUMERICAL_ABS_TOL = 1e-12
 NUMERICAL_REL_TOL = 1e-10
+SHARPE_ACCEPTANCE_DELTA = 0.002
+FAMA_IC_ACCEPTANCE_DELTA = 0.001
 
 
 def _numerical_tolerance(parent_value: float, candidate_value: float) -> float:
@@ -144,20 +146,27 @@ def evaluate_gate(
     parent_signal_daily: pd.DataFrame,
     candidate_signal_daily: pd.DataFrame,
     expected_signature: list[dict],
-    structural_rass_promotion: bool = False,
+    freeze_alpha_on_promotion: bool = False,
+    fama_ic_override: bool = False,
+    parent_ensemble_diagnostics: dict | None = None,
+    candidate_ensemble_diagnostics: dict | None = None,
 ) -> dict:
-    sharpe_delta, sharpe_epsilon = paired_moving_block_epsilon(
-        parent_diagnostics,
-        candidate_diagnostics,
-        lambda frame: _sharpe(frame["net_return"]),
-    )
+    aligned_parent, aligned_candidate = _aligned(parent_diagnostics, candidate_diagnostics)
+    observed_parent_sharpe = _sharpe(aligned_parent["net_return"])
+    observed_candidate_sharpe = _sharpe(aligned_candidate["net_return"])
+    sharpe_delta = observed_candidate_sharpe - observed_parent_sharpe
+    if not np.isfinite(sharpe_delta):
+        sharpe_delta = None
+    elif abs(sharpe_delta) <= _numerical_tolerance(observed_parent_sharpe, observed_candidate_sharpe):
+        sharpe_delta = 0.0
+    sharpe_epsilon = SHARPE_ACCEPTANCE_DELTA if sharpe_delta is not None else None
     required_unavailable: list[str] = []
-    if sharpe_delta is None or sharpe_epsilon is None:
+    if sharpe_delta is None:
         sharpe_state = "UNAVAILABLE"
         required_unavailable.append("sharpe")
-    elif sharpe_delta > sharpe_epsilon:
+    elif sharpe_delta > SHARPE_ACCEPTANCE_DELTA:
         sharpe_state = "IMPROVED"
-    elif sharpe_delta < -sharpe_epsilon:
+    elif sharpe_delta < -SHARPE_ACCEPTANCE_DELTA:
         sharpe_state = "WORSE"
     else:
         sharpe_state = "UNCHANGED"
@@ -211,8 +220,6 @@ def evaluate_gate(
     guardrails = [
         ("max_drawdown_magnitude", lambda frame: _drawdown_magnitude(frame["net_return"])),
         ("annual_volatility", lambda frame: _annual_volatility(frame["net_return"])),
-        ("one_way_turnover_mean", _mean_column("one_way_turn")),
-        ("transaction_cost_drag_mean", _mean_column("transaction_cost_drag")),
         ("portfolio_concentration_mean", _mean_column("portfolio_concentration")),
         ("invested_weight_shortfall_mean", _mean_column("invested_weight_shortfall")),
     ]
@@ -231,6 +238,24 @@ def evaluate_gate(
         guardrail_records.append({"metric": metric, "oriented_delta": delta, "epsilon": epsilon, "state": state})
     tradeoff_state = "MATERIAL_DEGRADATION" if degraded else "UNAVAILABLE" if any(item["state"] == "UNAVAILABLE" for item in guardrail_records) else "NO_MATERIAL_DEGRADATION"
 
+    aligned_parent_signal, aligned_candidate_signal = _aligned(parent_signal_daily, candidate_signal_daily)
+    parent_ic = _mean_column("ic")(aligned_parent_signal)
+    candidate_ic = _mean_column("ic")(aligned_candidate_signal)
+    ic_delta = candidate_ic - parent_ic
+    ic_numerical_tolerance = _numerical_tolerance(parent_ic, candidate_ic)
+    if not np.isfinite(ic_delta):
+        ic_delta = None
+        fama_ic_state = "UNAVAILABLE"
+    elif abs(ic_delta) <= ic_numerical_tolerance:
+        ic_delta = 0.0
+        fama_ic_state = "UNCHANGED"
+    elif ic_delta > FAMA_IC_ACCEPTANCE_DELTA + ic_numerical_tolerance:
+        fama_ic_state = "IMPROVED"
+    elif ic_delta < -FAMA_IC_ACCEPTANCE_DELTA - ic_numerical_tolerance:
+        fama_ic_state = "WORSE"
+    else:
+        fama_ic_state = "UNCHANGED"
+
     if sharpe_state == "WORSE":
         verdict = "FALSIFIED"
     elif mechanism_state == "OPPOSITE":
@@ -248,19 +273,90 @@ def evaluate_gate(
     else:
         verdict = "UNCERTAIN"
 
+    seed_ic_deltas: list[dict] = []
+    if parent_ensemble_diagnostics is not None and candidate_ensemble_diagnostics is not None:
+        parent_by_seed = {
+            int(item["seed"]): item
+            for item in parent_ensemble_diagnostics.get("seed_signal_metrics", [])
+        }
+        candidate_by_seed = {
+            int(item["seed"]): item
+            for item in candidate_ensemble_diagnostics.get("seed_signal_metrics", [])
+        }
+        if set(parent_by_seed) == set(candidate_by_seed) == {0, 1, 2}:
+            for seed in sorted(parent_by_seed):
+                parent_value = parent_by_seed[seed].get("ic")
+                candidate_value = candidate_by_seed[seed].get("ic")
+                delta = (
+                    float(candidate_value) - float(parent_value)
+                    if parent_value is not None and candidate_value is not None
+                    else None
+                )
+                seed_ic_deltas.append({"seed": seed, "delta": delta})
+    finite_seed_deltas = [item["delta"] for item in seed_ic_deltas if item["delta"] is not None and np.isfinite(item["delta"])]
+    positive_seed_count = sum(delta > 0.0 for delta in finite_seed_deltas)
+    median_seed_delta = float(np.median(finite_seed_deltas)) if len(finite_seed_deltas) == 3 else None
+    seed_consistent = bool(
+        len(finite_seed_deltas) == 3
+        and positive_seed_count >= 2
+        and median_seed_delta is not None
+        and median_seed_delta > FAMA_IC_ACCEPTANCE_DELTA
+    )
+
     ordinary_promotion = verdict in {"SUPPORTED", "PARTIALLY_SUPPORTED"}
-    promotion = bool(structural_rass_promotion or ordinary_promotion)
+    # FAMA's IC rule is a narrow rescue for an otherwise UNCERTAIN candidate.
+    # It cannot overturn Sharpe deterioration, an opposite mechanism, or a
+    # material trade-off, and it requires improvement in the ensemble plus a
+    # majority-consistent improvement across the three frozen seeds.
+    fama_ic_override_applied = bool(
+        fama_ic_override
+        and verdict == "UNCERTAIN"
+        and fama_ic_state == "IMPROVED"
+        and sharpe_state != "WORSE"
+        and mechanism_state != "OPPOSITE"
+        and not degraded
+        and seed_consistent
+    )
+    # RASS bootstrap candidates use the same portfolio-based Gate as every
+    # other candidate.  The flag only freezes alpha after an ordinary promotion;
+    # it never overrides an UNCERTAIN or FALSIFIED verdict.
+    promotion = bool(ordinary_promotion or fama_ic_override_applied)
+    if fama_ic_override_applied and not ordinary_promotion:
+        promotion_reason = "fama_validation_ic_override"
+        gate_verdict_usage = "overridden_by_fama_validation_ic"
+    else:
+        promotion_reason = "validation_gate" if ordinary_promotion else "rollback"
+        gate_verdict_usage = "controls_promotion"
     return {
         "gate_verdict": verdict,
-        "sharpe": {"delta": sharpe_delta, "epsilon": sharpe_epsilon, "state": sharpe_state},
+        "sharpe": {
+            "delta": sharpe_delta,
+            "epsilon": sharpe_epsilon,
+            "acceptance_delta": SHARPE_ACCEPTANCE_DELTA,
+            "comparison": "fixed_symmetric_epsilon",
+            "state": sharpe_state,
+        },
         "mechanism_state": mechanism_state,
         "mechanism_metrics": mechanism_records,
         "tradeoff_state": tradeoff_state,
         "guardrails": guardrail_records,
         "required_evidence_unavailable": sorted(set(required_unavailable)),
+        "fama_ic_override": {
+            "enabled": bool(fama_ic_override),
+            "parent_ic": float(parent_ic) if np.isfinite(parent_ic) else None,
+            "candidate_ic": float(candidate_ic) if np.isfinite(candidate_ic) else None,
+            "delta": ic_delta,
+            "acceptance_delta": FAMA_IC_ACCEPTANCE_DELTA,
+            "state": fama_ic_state,
+            "seed_ic_deltas": seed_ic_deltas,
+            "positive_seed_count": positive_seed_count,
+            "median_seed_delta": median_seed_delta,
+            "seed_consistent": seed_consistent,
+            "applied": fama_ic_override_applied,
+        },
         "promotion": promotion,
-        "promotion_reason": "mandatory_rass_structural_initialization" if structural_rass_promotion else "validation_gate" if ordinary_promotion else "rollback",
-        "gate_verdict_usage": "audit_only_for_exp_001" if structural_rass_promotion else "controls_promotion",
-        "alpha_frozen_after_promotion": bool(structural_rass_promotion),
+        "promotion_reason": promotion_reason,
+        "gate_verdict_usage": gate_verdict_usage,
+        "alpha_frozen_after_promotion": bool(freeze_alpha_on_promotion and promotion),
         "contains_test_derived_data": False,
     }

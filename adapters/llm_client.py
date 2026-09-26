@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import jsonschema
 
-from core.errors import ExternalServiceError
+from core.errors import ExternalServiceError, IsolationError
 from core.io_utils import load_json
 from core.isolation import assert_validation_safe_value
 
@@ -119,7 +119,7 @@ class AgentClient:
                     jsonschema.Draft202012Validator(schema).validate(result)
                     assert_validation_safe_value(result)
                     return result
-            except (httpx.HTTPError, ValueError, jsonschema.ValidationError) as exc:
+            except (httpx.HTTPError, ValueError, jsonschema.ValidationError, IsolationError) as exc:
                 last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
             if attempt < 2:
                 time.sleep(2 ** attempt)
