@@ -9,7 +9,7 @@ groups:
     target_path: z_alpha.selected_features
     source_path: z_alpha.feature_pool
     allowed_while_alpha_frozen: false
-    maximum_failed_executed_candidates: 3
+    maximum_failed_executed_candidates: 2
     allowed_initial_counts: [5]
     target_total_count: 8
     additions_rule: target_total_count_minus_initial_count
@@ -49,7 +49,7 @@ groups:
     acceptance_mode: ordinary_validation_gate
     promotion_verdicts: [SUPPORTED, PARTIALLY_SUPPORTED]
     retry_set_rule: partial_overlap_allowed_but_complete_three_factor_set_must_differ
-    three_failure_action: freeze_original_five_features_and_continue_to_fama_rapa
+    failure_limit_action: freeze_original_five_features_after_two_failures_and_continue_to_fama_rapa
     validation_gate_verdict_usage: controls_promotion
 
 # Before a formal run, resolve the named Qlib feature_pool into a deterministic

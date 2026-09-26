@@ -291,7 +291,7 @@ class StateAndMemoryTests(unittest.TestCase):
             self.assertTrue(load_json(root / "configs" / "current.json")["z_alpha"]["alpha_frozen"])
             self.assertEqual(store.state()["accepted_experiment_id"], "EXP_001")
 
-    def test_three_failure_fallback_freezes_original_five_factor_parent(self):
+    def test_two_failure_fallback_freezes_original_five_factor_parent(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = {
@@ -301,15 +301,15 @@ class StateAndMemoryTests(unittest.TestCase):
             }
             atomic_write_json(root / "configs" / "current.json", config)
             atomic_write_json(root / "configs" / "state.json", {
-                "accepted_experiment_id": "EXP_000", "next_round": 3, "status": "ADAPTING",
+                "accepted_experiment_id": "EXP_000", "next_round": 2, "status": "ADAPTING",
             })
             store = StateStore(root)
-            frozen = store.freeze_five_factor_alpha_after_rass_failures("EXP_003", 4, 3)
+            frozen = store.freeze_five_factor_alpha_after_rass_failures("EXP_002", 3, 2)
             self.assertTrue(frozen["z_alpha"]["alpha_frozen"])
             self.assertEqual(frozen["z_alpha"]["selected_features"], list(range(5)))
             self.assertEqual(frozen["z_model"]["derived"]["d_feat"], 5)
             self.assertEqual(store.state()["accepted_experiment_id"], "EXP_000")
-            self.assertEqual(store.state()["rass_failed_attempts"], 3)
+            self.assertEqual(store.state()["rass_failed_attempts"], 2)
 
     def test_memory_keeps_rejected_records_and_all_projections(self):
         with tempfile.TemporaryDirectory() as tmp:

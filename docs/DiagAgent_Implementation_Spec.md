@@ -171,7 +171,7 @@ are never cached or replayed. EXP_001 executes the newly selected eight-factor
 configuration with otherwise default submitted parameters. The normal Gate may
 reject it. RASS may test at most three distinct
 three-factor additions, always from the accepted five-factor parent. Acceptance
-sets `alpha_frozen=true` and `d_feat=8`; three complete failures instead freeze
+sets `alpha_frozen=true` and `d_feat=8`; two complete failures instead freeze
 the original five factors with `d_feat=5`. Either outcome permanently disables
 later RASS routing.
 Only deterministic RASS evidence is shared; factor selections, models,
@@ -355,7 +355,7 @@ Procedure:
 The current target baseline begins with five ordered features. Immediately after
 `EXP_000`, while `alpha_frozen=false`, CLEM must use the observed configuration
 count as evidence of insufficient initial feature breadth and route RASS. This
-priority continues only until one candidate is accepted or three complete
+priority continues only until one candidate is accepted or two complete
 candidates fail.
 
 RASS is an LLM-backed specialist. It follows `agents/RASS/SYSTEM.md` and
@@ -371,10 +371,10 @@ agent-valid evaluation path. `SUPPORTED` or `PARTIALLY_SUPPORTED` promotes and
 freezes the eight-factor alpha. `UNCERTAIN` or `FALSIFIED` rolls back to
 `EXP_000`; RASS then receives the validation-safe failure outcome and may choose
 another three-factor set. Partial overlap is allowed, but the full unordered
-set may not repeat. After three complete rejected candidates, freeze the
+set may not repeat. After two complete rejected candidates, freeze the
 original five-factor alpha and route only FAMA or RAPA. Contract, API, data, or
 runtime failures are not factor-performance evidence and do not count toward
-the three failures.
+the two failures.
 
 For factor-quality evidence under year ID `Y`, use the three complete calendar
 years `Y-3`, `Y-2`, and `Y-1`. Purge the final two trading signal dates of every
@@ -428,7 +428,7 @@ CLEM receives only:
 - the frozen CLEM instruction and output schema.
 
 CLEM returns RASS while the five-factor alpha remains unresolved and fewer than
-three complete RASS candidates have failed. After acceptance or fallback freezes
+two complete RASS candidates have failed. After acceptance or fallback freezes
 alpha, it returns exactly one of `FAMA` or `RAPA`, plus:
 
 - selected layer;
@@ -964,7 +964,7 @@ Before running a formal trajectory, tests must prove:
 10. T/T+1/T+2 alignment and both directional masks are correct.
 11. `SUPPORTED` and `PARTIALLY_SUPPORTED` update accepted state. Verify that
     RASS uses the same Gate, retries only with a non-identical three-factor set,
-    and after three complete failures freezes the original five factors.
+    and after two complete failures freezes the original five factors.
     Verify that every later CLEM decision is restricted to FAMA or RAPA.
     Verify separately that only FAMA promotes through
     `fama_validation_ic_override` when `delta_valid_ic > 0.001`, while the

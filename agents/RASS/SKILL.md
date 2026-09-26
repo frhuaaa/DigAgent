@@ -35,7 +35,7 @@ or any other rule that directly chooses the three factors.
   exactly enough catalog factors to make `z_alpha.selected_features` reach eight.
 - Do not modify factor definitions, label, split, model, or portfolio settings.
 - Use the ordinary agent-valid portfolio Validation Gate. An accepted candidate
-  freezes eight factors. After three complete rejected candidates, freeze the
+  freezes eight factors. After two complete rejected candidates, freeze the
   original five-factor baseline and permanently disable RASS.
 - A retry may reuse one or two previously tried factors, but its complete
   unordered three-factor addition set must be new.

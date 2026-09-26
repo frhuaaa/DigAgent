@@ -248,7 +248,7 @@ After each phase, run its focused tests. Do not proceed past Phase 2 until the s
   `epsilon_sharpe = 0.002` instead of a Bootstrap-derived Sharpe epsilon.
   `SUPPORTED` and `PARTIALLY_SUPPORTED` promote. Apply the same Gate to RASS:
   reject and retry from the five-factor parent with a non-identical three-factor
-  set, then freeze the original five factors after three complete failures. Also
+   set, then freeze the original five factors after two complete failures. Also
   implement the FAMA-only validation-IC override: when full-precision mean
   daily ensemble validation IC improves by more than `0.001` versus the accepted
   parent, the ordinary verdict is `UNCERTAIN`, at least two of three seed deltas

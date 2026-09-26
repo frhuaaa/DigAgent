@@ -219,7 +219,7 @@ CLEM -> exactly one of RASS / FAMA / RAPA
   isolated researcher test evaluator must use `n_jobs=0`; it must not start a
   second multiprocessing DataLoader inside the training worker. `d_feat` equals
 `len(z_alpha.selected_features)`: five in every Round 0, eight after an accepted
-  RASS candidate, or five after the three-failure fallback. Use `DK_L` for train/train-valid learning
+  RASS candidate, or five after the two-failure fallback. Use `DK_L` for train/train-valid learning
   views and a separately preserved `DK_R` raw label for signal metrics. Test
   `DK_L` access remains restricted to the isolated researcher runner.
 
@@ -329,7 +329,7 @@ file under `agents/FAMA/intervention_spaces/`, and the RAPA/RASS
 and types.
 
 CLEM reassesses all eligible layers every round. While alpha remains unresolved,
-RASS is the only eligible layer. After RASS acceptance or three-failure fallback,
+RASS is the only eligible layer. After RASS acceptance or two-failure fallback,
 the eligible set is exactly FAMA and RAPA. Repeating a layer requires new
 evidence, an unresolved failure, and stronger support than alternatives.
 Repeated `FALSIFIED` or `UNCERTAIN` results require cross-layer reassessment.
@@ -358,7 +358,7 @@ after `EXP_000`, and after each complete rejected RASS candidate while fewer
 than three have failed, CLEM must route RASS from the unchanged five-factor
 accepted parent. The Agent receives prior validation-safe signal and portfolio
 outcomes and must choose a non-identical three-factor set. Acceptance freezes
-eight factors. Three failures freeze the original five factors. Later rounds
+eight factors. Two failures freeze the original five factors. Later rounds
 must choose FAMA or RAPA.
 
 An intervention requires CLEM confidence `>= 0.5`; this is comparative routing
@@ -381,7 +381,7 @@ candidate is promoted only when the ordinary Validation Gate returns
 the five-factor baseline and permits another distinct three-factor proposal.
 Only successfully executed Gate rejections count toward the maximum of three;
 contract, data, API, or runtime failures do not count as factor evidence. After
-the third complete rejection, deterministically freeze the original five-factor
+the second complete rejection, deterministically freeze the original five-factor
 configuration and continue to FAMA/RAPA.
 
 ## Validation-only adaptation and test isolation
@@ -886,7 +886,7 @@ Add automated tests for: physical test-path denial; exact result keys, nulls,
 types and three-decimal serialization; Round 0; layer/group legality; FAMA's
 two-parameter cap; RAPA's one-parameter rule; frozen fields; T/T+1/T+2 alignment;
 directional limit masks; dependency-aware reruns; accepted-state promotion and
-rollback; RASS Gate-controlled acceptance, non-identical retries, three-failure
+rollback; RASS Gate-controlled acceptance, non-identical retries, two-failure
 five-factor fallback, and subsequent hard alpha freeze; FAMA/RAPA-only routing;
 anti-repetition; and budget-exhaustion stopping.
 

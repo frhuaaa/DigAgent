@@ -83,9 +83,9 @@ feature breadth and select RASS. If the first candidate is rejected by the
 normal Validation Gate, select RASS again using the prior validation-safe
 portfolio outcome as failure evidence. The next three-factor set may overlap a
 prior set but must not be identical. Continue until one candidate is accepted
-or three complete candidates have failed.
+or two complete candidates have failed.
 
-An accepted candidate freezes eight factors. Three failed candidates trigger a
+An accepted candidate freezes eight factors. Two failed candidates trigger a
 deterministic rollback to and freeze of the original five factors. Either
 resolution permanently removes RASS from this trajectory. Every later round
 must choose between FAMA and RAPA.

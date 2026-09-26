@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-RASS_MAX_FAILED_ATTEMPTS = 3
+RASS_MAX_FAILED_ATTEMPTS = 2
 RASS_EXECUTED_VERDICTS = {
     "SUPPORTED",
     "PARTIALLY_SUPPORTED",

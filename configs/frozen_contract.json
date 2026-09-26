@@ -257,7 +257,7 @@
     "rass_bounded_initial_search": {
       "agent": "RASS",
       "group": "initial_feature_bootstrap",
-      "maximum_failed_executed_candidates": 3,
+      "maximum_failed_executed_candidates": 2,
       "each_candidate_parent": "EXP_000_FIVE_FACTOR_ACCEPTED_BASELINE",
       "candidate_set_rule": "THREE_ADDITIONS_MAY_PARTIALLY_OVERLAP_BUT_COMPLETE_UNORDERED_SET_MUST_NOT_REPEAT",
       "selection_mode": "agent_exploration_using_previous_three_complete_calendar_years",
@@ -297,10 +297,10 @@
       "gate_verdict_controls_promotion": true,
       "promotion_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED"],
       "rejected_candidate_action": "ROLL_BACK_TO_EXP_000_AND_RESELECT_THREE_FACTORS",
-      "third_failure_action": "FREEZE_ORIGINAL_FIVE_FACTOR_ALPHA_AND_CONTINUE_WITH_FAMA_OR_RAPA",
+      "failure_limit_action": "FREEZE_ORIGINAL_FIVE_FACTOR_ALPHA_AFTER_TWO_FAILURES_AND_CONTINUE_WITH_FAMA_OR_RAPA",
       "contract_or_runtime_failure_counts_as_candidate_failure": false,
       "freeze_catalog_and_evidence_after_promotion": true,
-      "later_rass_routes_forbidden_after_acceptance_or_three_failure_fallback": true,
+      "later_rass_routes_forbidden_after_acceptance_or_two_failure_fallback": true,
       "post_bootstrap_routes": ["FAMA", "RAPA"]
     },
     "sharpe_states": {

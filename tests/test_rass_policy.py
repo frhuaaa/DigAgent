@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+
+import yaml
 
 from core.rass_policy import (
+    RASS_MAX_FAILED_ATTEMPTS,
     rass_attempt_summaries,
     rass_attempted_addition_signatures,
     rass_failed_attempt_count,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def record(index: int, features: list[str], verdict: str, accepted: bool) -> dict:
@@ -28,6 +36,13 @@ def record(index: int, features: list[str], verdict: str, accepted: bool) -> dic
 
 
 class RassPolicyTests(unittest.TestCase):
+    def test_failure_limit_is_two_complete_rejections(self):
+        self.assertEqual(RASS_MAX_FAILED_ATTEMPTS, 2)
+        contract = json.loads((REPO_ROOT / "configs" / "frozen_contract.json").read_text(encoding="utf-8"))
+        space = yaml.safe_load((REPO_ROOT / "agents" / "RASS" / "intervention_space.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(contract["validation_gate"]["rass_bounded_initial_search"]["maximum_failed_executed_candidates"], 2)
+        self.assertEqual(space["groups"]["initial_feature_bootstrap"]["maximum_failed_executed_candidates"], 2)
+
     def test_counts_only_complete_gate_failures(self):
         records = [
             record(1, ["A", "B", "C"], "FALSIFIED", False),
